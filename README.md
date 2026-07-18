@@ -35,6 +35,17 @@ docker compose up -d mongo redis
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
+### Admin dashboard (multi-hospital onboarding)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 and sign in with `ADMIN_API_KEY`.  
+See [frontend/README.md](frontend/README.md).
+
 Register a hospital tenant:
 
 ```bash

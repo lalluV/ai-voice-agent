@@ -76,8 +76,10 @@ class PlivoOutboundService:
             self._settings.public_base_url.rstrip("/")
             + f"/plivo/transfer-xml?to={quote(destination)}"
         )
+        # Plivo Transfer API is POST /Call/{call_uuid}/ (not .../Transfer/).
+        # See https://www.plivo.com/docs/voice/api/calls/#transfer-a-call
         response = await self._client.post(
-            f"Call/{call_uuid}/Transfer/",
+            f"Call/{call_uuid}/",
             json={
                 "legs": "aleg",
                 "aleg_url": transfer_url,

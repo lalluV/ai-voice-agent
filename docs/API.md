@@ -24,6 +24,10 @@ Readiness probe. Returns `503` during shutdown or if Mongo (and Redis when enabl
 
 Prometheus text exposition format.
 
+## Admin dashboard
+
+Use the React console in `frontend/` to manage hospitals (login with `ADMIN_API_KEY`).
+
 ## Tenants (admin)
 
 ### `GET /admin/tenants`
@@ -58,6 +62,14 @@ Create tenant.
 Partial update. Invalidates DID cache entries.
 
 ### `DELETE /admin/tenants/{tenant_id}`
+
+Public tenant responses include `has_hms_token` / `has_gemini_key` flags (secrets are never returned).
+
+## Call logs (admin)
+
+### `GET /admin/call-logs?tenant_id=&limit=50`
+
+Recent call sessions for the console.
 
 ## Plivo webhooks
 

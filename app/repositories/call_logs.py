@@ -41,3 +41,19 @@ class CallLogRepository:
     async def get(self, session_id: str) -> CallLog | None:
         doc = await self._col.find_one({"session_id": session_id}, {"_id": 0})
         return CallLog.model_validate(doc) if doc else None
+
+    async def list_recent(
+        self,
+        *,
+        tenant_id: str | None = None,
+        limit: int = 50,
+    ) -> list[CallLog]:
+        query: dict = {}
+        if tenant_id:
+            query["tenant_id"] = tenant_id
+        cursor = (
+            self._col.find(query, {"_id": 0})
+            .sort("started_at", -1)
+            .limit(min(max(limit, 1), 200))
+        )
+        return [CallLog.model_validate(doc) async for doc in cursor]

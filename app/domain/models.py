@@ -66,7 +66,7 @@ class TenantUpdate(BaseModel):
 
 
 class TenantPublic(BaseModel):
-    """Safe tenant view — never exposes HMS JWT."""
+    """Safe tenant view — never exposes HMS JWT or Gemini keys."""
 
     tenant_id: str
     name: str
@@ -79,6 +79,8 @@ class TenantPublic(BaseModel):
     transfer_number: str | None = None
     hospital_blurb: str | None = None
     enabled: bool
+    has_hms_token: bool = False
+    has_gemini_key: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -96,6 +98,8 @@ class TenantPublic(BaseModel):
             transfer_number=tenant.transfer_number,
             hospital_blurb=tenant.hospital_blurb,
             enabled=tenant.enabled,
+            has_hms_token=bool(tenant.hms_auth_token),
+            has_gemini_key=bool(tenant.gemini_api_key),
             created_at=tenant.created_at,
             updated_at=tenant.updated_at,
         )

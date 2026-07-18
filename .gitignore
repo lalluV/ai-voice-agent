@@ -19,3 +19,6 @@ build/
 *.log
 .idea/
 .vscode/
+frontend/node_modules/
+frontend/dist/
+frontend/.env

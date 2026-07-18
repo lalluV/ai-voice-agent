@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import admin_tenants, health, plivo_stream, plivo_webhooks
+from app.api import admin_call_logs, admin_tenants, health, plivo_stream, plivo_webhooks
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.mongo import close_mongo, connect_mongo, get_db
@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI):
     app.state.tenant_repo = tenant_repo
     app.state.tenant_cache = tenant_cache
     app.state.tenant_resolver = tenant_resolver
+    app.state.call_logs = call_logs
     app.state.session_manager = sessions
     app.state.orchestrator = orchestrator
     app.state.tool_router = tool_router
@@ -132,14 +133,19 @@ def create_app() -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if not settings.is_production and not origins:
+        origins = ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if not settings.is_production else [],
+        allow_origins=origins or ["*"],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     app.include_router(health.router)
     app.include_router(admin_tenants.router)
+    app.include_router(admin_call_logs.router)
     app.include_router(plivo_webhooks.router)
     app.include_router(plivo_stream.router)
     return app

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     admin_api_key: str = Field(default="change-me-admin-key")
     plivo_validate_signature: bool = True
+    # Comma-separated origins for the admin dashboard (e.g. http://localhost:5173)
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     plivo_auth_id: str = ""
     plivo_auth_token: str = ""

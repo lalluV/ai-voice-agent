@@ -80,12 +80,22 @@ class AudioBridge:
                     continue
                 if event.type == ProviderEventType.AUDIO and event.pcm16:
                     await self._play_pcm(event.pcm16)
+                    continue
+                if event.type == ProviderEventType.TURN_COMPLETE:
+                    logger.debug(
+                        "provider_turn_complete",
+                        stream_id=self._stream_id,
+                        playback_chunks=self._playback_chunks,
+                    )
+                    continue
                 if event.type == ProviderEventType.ERROR:
                     logger.error(
                         "provider_event_error",
                         error=event.error,
                         tenant_id=self._tenant_id,
                     )
+                    # Do not close the bridge on a soft error event; wait for
+                    # disconnect / None sentinel from the provider.
         except asyncio.CancelledError:
             raise
         except Exception:

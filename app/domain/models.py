@@ -22,7 +22,7 @@ class Tenant(BaseModel):
     hms_auth_token: str
     ai_provider: AIProvider = AIProvider.GEMINI
     gemini_api_key: str | None = None
-    voice_name: str = "Kore"
+    voice_name: str = "Aoede"
     prompt_version: str = "v1"
     transfer_number: str | None = None
     hospital_blurb: str | None = None
@@ -43,7 +43,7 @@ class TenantCreate(BaseModel):
     hms_auth_token: str
     ai_provider: AIProvider = AIProvider.GEMINI
     gemini_api_key: str | None = None
-    voice_name: str = "Kore"
+    voice_name: str = "Aoede"
     prompt_version: str = "v1"
     transfer_number: str | None = None
     hospital_blurb: str | None = None

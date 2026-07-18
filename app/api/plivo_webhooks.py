@@ -66,7 +66,7 @@ async def plivo_answer(
     content_type = settings.plivo_audio_content_type
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Stream bidirectional="true" keepCallAlive="true" contentType="{content_type}" extraHeaders="{extra}">
+  <Stream bidirectional="true" keepCallAlive="true" contentType="{content_type}" noiseCancellation="true" extraHeaders="{extra}">
     {ws_url}
   </Stream>
 </Response>"""

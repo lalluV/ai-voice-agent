@@ -30,7 +30,10 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.1-flash-live-preview"
-    gemini_voice_name: str = "Kore"
+    gemini_voice_name: str = "Aoede"
+    gemini_vad_silence_ms: int = 900
+    interrupt_grace_seconds: float = 3.0
+    utterance_interrupt_grace_seconds: float = 0.45
 
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_database: str = "voice_agent"

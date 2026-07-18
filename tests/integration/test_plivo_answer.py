@@ -41,7 +41,8 @@ async def test_answer_returns_stream_xml(sample_tenant_dict: dict) -> None:
     assert resp.status_code == 200
     assert "application/xml" in resp.headers["content-type"]
     assert "<Stream" in resp.text
-    assert "bidirectional=\"true\"" in resp.text
+    assert 'bidirectional="true"' in resp.text
+    assert 'noiseCancellation="true"' in resp.text
     assert session.session_id in resp.text
     assert tenant.tenant_id in resp.text
 

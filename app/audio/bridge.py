@@ -44,6 +44,7 @@ class AudioBridge:
         self._tasks: list[asyncio.Task] = []
         self._closed = asyncio.Event()
         self._playback_chunks = 0
+        self._clear_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._tasks = [
@@ -53,16 +54,22 @@ class AudioBridge:
     async def on_plivo_media(self, payload_b64: str) -> None:
         if self._closed.is_set():
             return
-        raw = base64.b64decode(payload_b64)
-        if self._use_mulaw:
-            pcm8k = mulaw_to_pcm16(raw)
-        else:
-            pcm8k = raw
-        pcm16k = resample_pcm16(pcm8k, self._plivo_rate, self._in_rate)
-        await self._provider.send_audio(pcm16k)
+        try:
+            raw = base64.b64decode(payload_b64)
+            if self._use_mulaw:
+                pcm8k = mulaw_to_pcm16(raw)
+            else:
+                pcm8k = raw
+            pcm16k = resample_pcm16(pcm8k, self._plivo_rate, self._in_rate)
+            await self._provider.send_audio(pcm16k)
+        except Exception:
+            logger.exception("plivo_media_forward_failed", tenant_id=self._tenant_id)
 
     async def clear_plivo_audio(self) -> None:
-        await self._send_json({"event": "clearAudio", "streamId": self._stream_id})
+        async with self._clear_lock:
+            await self._send_json(
+                {"event": "clearAudio", "streamId": self._stream_id}
+            )
 
     async def _provider_to_plivo(self) -> None:
         try:
@@ -71,7 +78,15 @@ class AudioBridge:
                     break
                 if event.type == ProviderEventType.INTERRUPTED:
                     INTERRUPTIONS.labels(tenant_id=self._tenant_id).inc()
-                    await self.clear_plivo_audio()
+                    note = getattr(self._provider, "note_agent_speaking", None)
+                    if callable(note):
+                        note(False)
+                    try:
+                        await self.clear_plivo_audio()
+                    except Exception:
+                        logger.exception(
+                            "clear_audio_failed", stream_id=self._stream_id
+                        )
                     logger.info(
                         "barge_in_cleared_audio",
                         stream_id=self._stream_id,
@@ -82,7 +97,10 @@ class AudioBridge:
                     await self._play_pcm(event.pcm16)
                     continue
                 if event.type == ProviderEventType.TURN_COMPLETE:
-                    logger.debug(
+                    note = getattr(self._provider, "note_agent_speaking", None)
+                    if callable(note):
+                        note(False)
+                    logger.info(
                         "provider_turn_complete",
                         stream_id=self._stream_id,
                         playback_chunks=self._playback_chunks,
@@ -94,8 +112,6 @@ class AudioBridge:
                         error=event.error,
                         tenant_id=self._tenant_id,
                     )
-                    # Do not close the bridge on a soft error event; wait for
-                    # disconnect / None sentinel from the provider.
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -104,24 +120,32 @@ class AudioBridge:
             self._closed.set()
 
     async def _play_pcm(self, pcm_provider_rate: bytes) -> None:
+        if not pcm_provider_rate:
+            return
         pcm_plivo = resample_pcm16(pcm_provider_rate, self._out_rate, self._plivo_rate)
+        if not pcm_plivo:
+            return
         if self._use_mulaw:
             payload = pcm16_to_mulaw(pcm_plivo)
             content_type = "audio/x-mulaw"
         else:
             payload = pcm_plivo
             content_type = "audio/x-l16"
-        await self._send_json(
-            {
-                "event": "playAudio",
-                "media": {
-                    "contentType": content_type,
-                    "sampleRate": self._plivo_rate,
-                    "payload": base64.b64encode(payload).decode("ascii"),
-                },
-            }
-        )
-        self._playback_chunks += 1
+        # Keep playAudio chunks modest for Plivo (<16KB base64 recommended)
+        max_raw = 12_000
+        for i in range(0, len(payload), max_raw):
+            chunk = payload[i : i + max_raw]
+            await self._send_json(
+                {
+                    "event": "playAudio",
+                    "media": {
+                        "contentType": content_type,
+                        "sampleRate": self._plivo_rate,
+                        "payload": base64.b64encode(chunk).decode("ascii"),
+                    },
+                }
+            )
+            self._playback_chunks += 1
 
     async def stop(self) -> None:
         self._closed.set()

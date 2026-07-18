@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -19,14 +20,11 @@ logger = get_logger(__name__)
 
 class GeminiProvider(VoiceProvider):
     """
-    Gemini 3.1 Flash Live provider using google-genai Live API.
+    Gemini 3.1 Flash Live provider.
 
-    Audio: PCM16 16 kHz in / 24 kHz out.
-    Interruption: server_content.interrupted → ProviderEventType.INTERRUPTED
-    Tools: synchronous function calling (3.1 does not yet support async FC).
-
-    Important: session.receive() yields one *turn* at a time. The outer loop must
-    call receive() repeatedly for the lifetime of the call (see Google cookbook).
+    - PCM16 16 kHz in / 24 kHz out
+    - receive() is per-turn; outer loop keeps the session alive
+    - Ignores self-interrupt noise during call-start grace window
     """
 
     def __init__(
@@ -49,6 +47,9 @@ class GeminiProvider(VoiceProvider):
         self._receive_task: asyncio.Task | None = None
         self._connected = False
         self._send_lock = asyncio.Lock()
+        self._connected_at = 0.0
+        self._ignore_interrupt_until = 0.0
+        self._agent_speaking = False
 
     async def connect(self, session: CallSession) -> None:
         self._session = session
@@ -58,7 +59,6 @@ class GeminiProvider(VoiceProvider):
 
         try:
             from google import genai
-            from google.genai import types
         except ImportError as exc:
             raise RuntimeError("google-genai package is required") from exc
 
@@ -73,6 +73,8 @@ class GeminiProvider(VoiceProvider):
         voice_name = self._tenant.voice_name or self._settings.gemini_voice_name
 
         tools = [{"function_declarations": gemini_function_declarations()}]
+        # Tuned VAD: longer silence so brief pauses are not cut off;
+        # slightly less eager start to reduce echo false barge-ins on PSTN.
         config: dict[str, Any] = {
             "response_modalities": ["AUDIO"],
             "system_instruction": system_instruction,
@@ -83,21 +85,35 @@ class GeminiProvider(VoiceProvider):
                 }
             },
             "thinking_config": {"thinking_level": "minimal"},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": False,
+                    "prefix_padding_ms": 200,
+                    "silence_duration_ms": self._settings.gemini_vad_silence_ms,
+                }
+            },
         }
 
         self._live_cm = self._client.aio.live.connect(model=model, config=config)
         self._live = await self._live_cm.__aenter__()
         self._connected = True
+        self._connected_at = time.monotonic()
+        # Protect greeting from line/echo self-interrupt
+        self._ignore_interrupt_until = (
+            self._connected_at + self._settings.interrupt_grace_seconds
+        )
         self._receive_task = asyncio.create_task(
             self._receive_loop(), name=f"gemini-recv-{session.session_id}"
         )
-        # Seed opening turn so the agent greets without waiting for caller audio
+
         try:
             await self._live.send_realtime_input(
                 text=(
-                    f"A caller just connected to {self._tenant.name}. "
-                    "Greet them briefly, state the hospital name, and ask how you can help. "
-                    "Keep it to one short sentence."
+                    f"కాల్ కనెక్ట్ అయింది. ఆస్పత్రి పేరు: {self._tenant.name}. "
+                    "తెలుగులో చాలా సహజంగా, చిన్నగా ఒక్క వాక్యంలో నమస్కారం చెప్పి "
+                    "ఎలా సహాయం కావాలో అడగండి. ఉదాహరణ: "
+                    f"'నమస్కారం, {self._tenant.name}, ఎలా సాయం చేయాలి?' "
+                    "English అడిగితే English లో మాట్లాడండి. Do not call any tools yet."
                 )
             )
         except Exception:  # pragma: no cover
@@ -106,6 +122,7 @@ class GeminiProvider(VoiceProvider):
         logger.info(
             "gemini_connected",
             model=model,
+            voice=voice_name,
             session_id=session.session_id,
             tenant_id=self._tenant.tenant_id,
         )
@@ -130,13 +147,28 @@ class GeminiProvider(VoiceProvider):
             session_id=self._session.session_id if self._session else None,
         )
 
+    def note_agent_speaking(self, speaking: bool) -> None:
+        self._agent_speaking = speaking
+        if speaking:
+            # Brief shield against echo-triggered interrupt at start of each utterance
+            self._ignore_interrupt_until = max(
+                self._ignore_interrupt_until,
+                time.monotonic() + self._settings.utterance_interrupt_grace_seconds,
+            )
+
     async def send_audio(self, pcm16_16k: bytes) -> None:
         if not self._connected or self._live is None or not pcm16_16k:
+            return
+        # Soft half-duplex: while agent audio is playing, do not feed mic to Gemini.
+        # Real barge-in still works after grace via Plivo clear + user speech after.
+        if self._agent_speaking and time.monotonic() < self._ignore_interrupt_until:
             return
         from google.genai import types
 
         try:
             async with self._send_lock:
+                if not self._connected or self._live is None:
+                    return
                 await self._live.send_realtime_input(
                     audio=types.Blob(
                         data=pcm16_16k,
@@ -183,10 +215,6 @@ class GeminiProvider(VoiceProvider):
             await self._live.send_tool_response(function_responses=[response])
 
     async def _receive_loop(self) -> None:
-        """
-        google-genai Live: each session.receive() iterates one model turn.
-        Keep calling receive() until the call disconnects.
-        """
         assert self._live is not None
         try:
             while self._connected:
@@ -195,10 +223,6 @@ class GeminiProvider(VoiceProvider):
                     if not self._connected:
                         break
                     await self._handle_response(response)
-                logger.debug(
-                    "gemini_turn_finished",
-                    session_id=self._session.session_id if self._session else None,
-                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -211,10 +235,13 @@ class GeminiProvider(VoiceProvider):
         finally:
             await self._queue.put(None)
 
+    def _should_honor_interrupt(self) -> bool:
+        return time.monotonic() >= self._ignore_interrupt_until
+
     async def _handle_response(self, response: Any) -> None:
-        # Convenience audio accessor used by cookbook samples
         data = getattr(response, "data", None)
         if data:
+            self.note_agent_speaking(True)
             await self._queue.put(
                 ProviderAudioEvent(
                     type=ProviderEventType.AUDIO,
@@ -232,24 +259,31 @@ class GeminiProvider(VoiceProvider):
         sc = getattr(response, "server_content", None)
         if sc is not None:
             if getattr(sc, "interrupted", False):
-                if self._session:
-                    self._session.interruption_count += 1
-                await self._queue.put(
-                    ProviderAudioEvent(type=ProviderEventType.INTERRUPTED)
-                )
-                logger.info(
-                    "gemini_interrupted",
-                    session_id=self._session.session_id if self._session else None,
-                )
+                if self._should_honor_interrupt():
+                    if self._session:
+                        self._session.interruption_count += 1
+                    self._agent_speaking = False
+                    await self._queue.put(
+                        ProviderAudioEvent(type=ProviderEventType.INTERRUPTED)
+                    )
+                    logger.info(
+                        "gemini_interrupted",
+                        session_id=self._session.session_id if self._session else None,
+                    )
+                else:
+                    logger.info(
+                        "gemini_interrupt_ignored_grace",
+                        session_id=self._session.session_id if self._session else None,
+                    )
 
             model_turn = getattr(sc, "model_turn", None)
             if model_turn and getattr(model_turn, "parts", None):
                 for part in model_turn.parts:
                     inline = getattr(part, "inline_data", None)
                     if inline and getattr(inline, "data", None):
-                        # Skip if already emitted via response.data
                         if data and inline.data is data:
                             continue
+                        self.note_agent_speaking(True)
                         await self._queue.put(
                             ProviderAudioEvent(
                                 type=ProviderEventType.AUDIO,
@@ -266,6 +300,7 @@ class GeminiProvider(VoiceProvider):
                         )
 
             if getattr(sc, "turn_complete", False):
+                self._agent_speaking = False
                 await self._queue.put(
                     ProviderAudioEvent(type=ProviderEventType.TURN_COMPLETE)
                 )

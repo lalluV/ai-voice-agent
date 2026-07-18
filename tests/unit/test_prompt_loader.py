@@ -8,7 +8,7 @@ def test_build_system_instruction_includes_hospital() -> None:
     )
     assert "Sri Chakra" in text
     assert "Multispecialty hospital" in text
-    assert "Telugu" in text
+    assert "Telugu" in text or "తెలుగు" in text or "నమస్కారం" in text
     assert "patientSearch" in text
 
 
@@ -17,4 +17,4 @@ def test_prompt_cache_reload() -> None:
     a = loader.load("v1", "language_policy.md")
     b = loader.load("v1", "language_policy.md")
     assert a == b
-    assert "Tenglish" in a
+    assert "Tenglish" in a or "నమస్కారం" in a

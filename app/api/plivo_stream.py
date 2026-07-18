@@ -106,10 +106,15 @@ async def plivo_stream(websocket: WebSocket) -> None:
                     await orchestrator.on_media(session_id, payload)
 
             elif event == "dtmf":
-                logger.info("dtmf_received", session_id=session_id, data=data)
+                logger.info("dtmf_received", session_id=session_id, digit=data.get("dtmf"))
 
-            elif event in {"stop", "clearedAudio"}:
-                logger.info("stream_event", event=event, session_id=session_id)
+            elif event == "clearedAudio":
+                # Expected after barge-in clearAudio — never treat as fatal
+                logger.info("plivo_cleared_audio", session_id=session_id)
+
+            elif event == "stop":
+                logger.info("plivo_stream_stop", session_id=session_id)
+                break
 
     except WebSocketDisconnect:
         logger.info("plivo_ws_disconnected", session_id=session_id)

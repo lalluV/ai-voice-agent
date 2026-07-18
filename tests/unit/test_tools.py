@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.domain.models import CallSession, Tenant, ToolCall
-from app.tools.handlers.hospital import DoctorAvailabilityHandler, SendWhatsappHandler
+from app.tools.handlers.hospital import DoctorAvailabilityHandler
 from app.tools.handlers.patient import PatientSearchHandler
 from app.tools.router import ToolRouter
 
@@ -13,7 +13,7 @@ from app.tools.router import ToolRouter
 @pytest.mark.asyncio
 async def test_patient_search_by_phone(sample_tenant_dict: dict) -> None:
     hms = AsyncMock()
-    hms.get = AsyncMock(return_value=[{"name": "Ravi", "phone": "999"}])
+    hms.get = AsyncMock(return_value=[{"name": "Ravi", "phone": "999", "UMRNo": "UMR1"}])
     handler = PatientSearchHandler(hms)
     tenant = Tenant.model_validate(sample_tenant_dict)
     session = CallSession(tenant_id=tenant.tenant_id)
@@ -24,26 +24,11 @@ async def test_patient_search_by_phone(sample_tenant_dict: dict) -> None:
         call_id="c1",
     )
     assert result.success
-    assert result.data[0]["name"] == "Ravi"
+    assert result.data["patients"][0]["name"] == "Ravi"
 
 
 @pytest.mark.asyncio
-async def test_send_whatsapp_requires_prescription(sample_tenant_dict: dict) -> None:
-    handler = SendWhatsappHandler(AsyncMock())
-    tenant = Tenant.model_validate(sample_tenant_dict)
-    session = CallSession(tenant_id=tenant.tenant_id)
-    result = await handler.execute(
-        tenant=tenant,
-        session=session,
-        arguments={"phone": "999", "message": "hi"},
-        call_id="c1",
-    )
-    assert not result.success
-    assert "TODO" in (result.error or "")
-
-
-@pytest.mark.asyncio
-async def test_doctor_availability_todo_note(sample_tenant_dict: dict) -> None:
+async def test_doctor_availability_lists_doctors(sample_tenant_dict: dict) -> None:
     hms = AsyncMock()
     hms.get = AsyncMock(return_value=[{"name": "Dr Rao", "department": "ENT"}])
     handler = DoctorAvailabilityHandler(hms)
@@ -56,8 +41,8 @@ async def test_doctor_availability_todo_note(sample_tenant_dict: dict) -> None:
         call_id="c1",
     )
     assert result.success
-    assert result.data["availability"] is None
-    assert "TODO" in result.data["note"]
+    assert result.data["count"] == 1
+    assert result.data["doctors"][0]["name"] == "Dr Rao"
 
 
 @pytest.mark.asyncio

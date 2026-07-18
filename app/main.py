@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
             DepartmentListHandler(hms, redis, settings),
             LabReportsHandler(hms),
             GenerateBillHandler(hms),
-            SendWhatsappHandler(hms),
+            SendWhatsappHandler(hms, settings),
             TransferCallHandler(transfer_fn),
         ]
     )

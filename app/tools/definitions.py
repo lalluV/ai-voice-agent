@@ -4,23 +4,29 @@ from typing import Any
 
 
 def gemini_function_declarations() -> list[dict[str, Any]]:
-    """Gemini Live-compatible function declarations."""
+    """Gemini Live tools — aligned with hms-server REST contracts."""
     return [
         {
             "name": "patientSearch",
-            "description": "Search patients by phone number or name.",
+            "description": (
+                "Search HMS patients. Prefer phone. "
+                "Ask for phone or name if missing. Do not guess."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "phone": {"type": "string", "description": "Patient phone number"},
-                    "name": {"type": "string", "description": "Patient name search"},
-                    "search": {"type": "string", "description": "Generic search text"},
+                    "phone": {"type": "string"},
+                    "name": {"type": "string"},
+                    "search": {"type": "string"},
                 },
             },
         },
         {
             "name": "createPatient",
-            "description": "Register a new patient.",
+            "description": (
+                "Register OP patient. HMS requires name, gender, age, phone. "
+                "Ask one missing field at a time before calling."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -33,8 +39,31 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "doctorAvailability",
+            "description": (
+                "List doctors from HMS staff (type Doctor). "
+                "ALWAYS call before bookAppointment if doctor not confirmed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doctorName": {"type": "string"},
+                    "department": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "departmentList",
+            "description": "List HMS departments. Use when caller asks for departments.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
             "name": "bookAppointment",
-            "description": "Book a patient appointment.",
+            "description": (
+                "Book HMS appointment. Requires name, phone, doctorName "
+                "(from doctorAvailability), date YYYY-MM-DD, time. "
+                "Ask for any missing field — never call incomplete."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -42,16 +71,19 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
                     "phone": {"type": "string"},
                     "doctorName": {"type": "string"},
                     "doctorId": {"type": "string"},
-                    "date": {"type": "string", "description": "YYYY-MM-DD"},
-                    "time": {"type": "string", "description": "HH:MM or slot label"},
+                    "date": {"type": "string"},
+                    "time": {"type": "string"},
                     "notes": {"type": "string"},
                 },
-                "required": ["name", "phone", "date", "time"],
+                "required": ["name", "phone", "doctorName", "date", "time"],
             },
         },
         {
             "name": "cancelAppointment",
-            "description": "Cancel an appointment by id or by patient phone + date.",
+            "description": (
+                "Cancel appointment (soft status=cancelled). "
+                "Need appointmentId or phone (+ optional date). Ask if missing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -62,70 +94,61 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "doctorAvailability",
-            "description": "Get doctor directory / approximate availability signals.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "doctorName": {"type": "string"},
-                    "department": {"type": "string"},
-                    "date": {"type": "string"},
-                },
-            },
-        },
-        {
-            "name": "departmentList",
-            "description": "List hospital departments.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-        {
             "name": "labReports",
-            "description": "Look up lab/diagnostics report information for a patient.",
+            "description": (
+                "Lab/diagnostics receipts from HMS. Need phone or UMR. Ask if missing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "phone": {"type": "string"},
-                    "patientId": {"type": "string"},
                     "umr": {"type": "string"},
+                    "patientId": {
+                        "type": "string",
+                        "description": "UMRNo (same as umr)",
+                    },
                 },
             },
         },
         {
             "name": "generateBill",
-            "description": "Fetch interim bill information for a patient.",
+            "description": (
+                "Interim bill via HMS patients/:UMR/interim-bill. "
+                "Need UMR or phone. Ask if missing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "patientId": {"type": "string"},
                     "umr": {"type": "string"},
+                    "patientId": {"type": "string", "description": "UMRNo"},
                     "phone": {"type": "string"},
+                    "endDate": {"type": "string"},
                 },
             },
         },
         {
             "name": "sendWhatsapp",
-            "description": "Send a WhatsApp message when supported by HMS.",
+            "description": (
+                "Send prescription WhatsApp only. Needs UMR + prescriptionId. "
+                "Not for free-text messages. Ask if missing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "phone": {"type": "string"},
-                    "patientId": {"type": "string"},
+                    "umr": {"type": "string"},
+                    "patientId": {"type": "string", "description": "UMRNo"},
                     "prescriptionId": {"type": "string"},
-                    "message": {"type": "string"},
                 },
             },
         },
         {
             "name": "transferCall",
-            "description": "Transfer the live call to a human receptionist.",
+            "description": "Transfer to human receptionist when needed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reason": {"type": "string"},
-                    "destination": {
-                        "type": "string",
-                        "description": "Optional override number",
-                    },
+                    "destination": {"type": "string"},
                 },
             },
         },

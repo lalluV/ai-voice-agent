@@ -11,11 +11,18 @@ from app.domain.models import CallSession, Tenant, ToolResult
 from app.hms import endpoints
 from app.hms.client import HmsClient
 from app.tools.base import ToolHandler
+from app.tools.helpers import (
+    hms_error_message,
+    normalize_doctor_list,
+    slim_patients,
+    slim_receipts,
+    view_base_url_for_tenant,
+)
 
 
 class DepartmentListHandler(ToolHandler):
     name = "departmentList"
-    description = "List departments"
+    description = "List hospital departments (HMS /departments)."
     parameters: dict[str, Any] = {}
 
     def __init__(
@@ -42,23 +49,36 @@ class DepartmentListHandler(ToolHandler):
                 )
         try:
             data = await self._hms.get(tenant, endpoints.DEPARTMENTS)
+            # Slim for voice
+            items = data if isinstance(data, list) else data.get("departments", [])
+            slim = [
+                {
+                    "name": d.get("name"),
+                    "code": d.get("department_code"),
+                    "type": d.get("type"),
+                }
+                for d in items
+                if isinstance(d, dict) and d.get("name")
+            ][:30]
+            payload = {"count": len(slim), "departments": slim}
             if self._redis is not None:
-                await self._redis.set(cache_key, json.dumps(data), ex=self._ttl)
-            return ToolResult(id=call_id, name=self.name, success=True, data=data)
+                await self._redis.set(cache_key, json.dumps(payload), ex=self._ttl)
+            return ToolResult(id=call_id, name=self.name, success=True, data=payload)
         except httpx.HTTPError as exc:
             return ToolResult(
-                id=call_id, name=self.name, success=False, error=str(exc)
+                id=call_id,
+                name=self.name,
+                success=False,
+                error=hms_error_message(exc),
             )
 
 
 class DoctorAvailabilityHandler(ToolHandler):
-    """
-    TODO: HMS has no dedicated doctor availability / slot API.
-    Fallback: list doctors via staff type + optional appointment scan.
-    """
-
     name = "doctorAvailability"
-    description = "Approximate doctor availability"
+    description = (
+        "List/filter doctors from HMS GET /staff/type/Doctor. "
+        "Call before bookAppointment when doctor is unclear."
+    )
     parameters: dict[str, Any] = {}
 
     def __init__(self, hms: HmsClient) -> None:
@@ -73,84 +93,51 @@ class DoctorAvailabilityHandler(ToolHandler):
         call_id: str,
     ) -> ToolResult:
         try:
-            doctors = await self._hms.get(
+            raw = await self._hms.get(
                 tenant, endpoints.STAFF_BY_TYPE.format(staff_type="Doctor")
             )
-            doctor_name = (arguments.get("doctorName") or "").lower()
-            department = (arguments.get("department") or "").lower()
-            if isinstance(doctors, list) and (doctor_name or department):
+            doctors = normalize_doctor_list(raw)
+            doctor_name = (arguments.get("doctorName") or "").lower().strip()
+            department = (arguments.get("department") or "").lower().strip()
+            filtered = doctors
+            if doctor_name or department:
                 filtered = []
                 for d in doctors:
-                    name = str(d.get("name", "")).lower()
-                    dept = str(d.get("department", "")).lower()
+                    name = d["name"].lower()
+                    dept = d.get("department", "").lower()
                     if doctor_name and doctor_name not in name:
                         continue
                     if department and department not in dept:
                         continue
                     filtered.append(d)
-                doctors = filtered
-            # TODO: replace with real availability API when HMS exposes slots
+            session.tool_context["doctors"] = filtered
+            slim = [
+                {
+                    "name": d["name"],
+                    "department": d.get("department") or "",
+                    "id": d.get("id"),
+                }
+                for d in filtered[:20]
+            ]
+            if not slim:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "No matching doctors. Ask department or another doctor name, "
+                        "then retry doctorAvailability."
+                    ),
+                    data={"count": 0, "doctors": []},
+                )
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=True,
                 data={
-                    "doctors": doctors,
-                    "availability": None,
-                    "note": (
-                        "TODO: No dedicated doctorAvailability API in HMS. "
-                        "Returned staff directory filter only."
-                    ),
-                },
-            )
-        except httpx.HTTPError as exc:
-            return ToolResult(
-                id=call_id, name=self.name, success=False, error=str(exc)
-            )
-
-
-class LabReportsHandler(ToolHandler):
-    """Partial: uses diagnostics receipts listing when available."""
-
-    name = "labReports"
-    description = "Lab report lookup"
-    parameters: dict[str, Any] = {}
-
-    def __init__(self, hms: HmsClient) -> None:
-        self._hms = hms
-
-    async def execute(
-        self,
-        *,
-        tenant: Tenant,
-        session: CallSession,
-        arguments: dict[str, Any],
-        call_id: str,
-    ) -> ToolResult:
-        params = {
-            k: v
-            for k, v in {
-                "search": arguments.get("phone")
-                or arguments.get("umr")
-                or arguments.get("patientId"),
-                "limit": 10,
-            }.items()
-            if v
-        }
-        try:
-            data = await self._hms.get(
-                tenant, endpoints.DIAGNOSTICS_RECEIPTS, params=params
-            )
-            return ToolResult(
-                id=call_id,
-                name=self.name,
-                success=True,
-                data={
-                    "results": data,
-                    "note": (
-                        "TODO: Confirm exact lab report endpoint with HMS team; "
-                        "using diagnostics-receipts as best-effort."
-                    ),
+                    "count": len(filtered),
+                    "doctors": slim,
+                    "note": "Confirm exact doctorName with caller, then bookAppointment.",
                 },
             )
         except httpx.HTTPError as exc:
@@ -158,16 +145,18 @@ class LabReportsHandler(ToolHandler):
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=(
-                    f"{exc}; TODO: HMS lab report API may differ — "
-                    "consult diagnostics routes."
-                ),
+                error=hms_error_message(exc),
             )
 
 
-class GenerateBillHandler(ToolHandler):
-    name = "generateBill"
-    description = "Interim bill pointer"
+class LabReportsHandler(ToolHandler):
+    """HMS diagnostics-receipts (lab module)."""
+
+    name = "labReports"
+    description = (
+        "Look up lab/diagnostics receipts. Prefer phone or UMR. "
+        "Ask if neither is provided."
+    )
     parameters: dict[str, Any] = {}
 
     def __init__(self, hms: HmsClient) -> None:
@@ -181,57 +170,158 @@ class GenerateBillHandler(ToolHandler):
         arguments: dict[str, Any],
         call_id: str,
     ) -> ToolResult:
-        patient_id = arguments.get("patientId") or arguments.get("umr")
-        try:
-            if not patient_id and arguments.get("phone"):
-                patients = await self._hms.get(
-                    tenant,
-                    endpoints.PATIENT_BY_PHONE.format(phone=arguments["phone"]),
-                )
-                if isinstance(patients, list) and patients:
-                    patient_id = (
-                        patients[0].get("UMRNo")
-                        or patients[0].get("umr")
-                        or patients[0].get("_id")
-                    )
-            if not patient_id:
-                return ToolResult(
-                    id=call_id,
-                    name=self.name,
-                    success=False,
-                    error="patientId or phone required",
-                )
-            data = await self._hms.get(
-                tenant,
-                endpoints.PATIENT_INTERIM_BILL.format(patient_id=patient_id),
+        phone = (arguments.get("phone") or "").strip()
+        umr = (arguments.get("umr") or arguments.get("patientId") or "").strip()
+        if not phone and not umr:
+            return ToolResult(
+                id=call_id,
+                name=self.name,
+                success=False,
+                error="Need phone or UMR for lab reports. Ask the caller.",
+                data={"missing": ["phone"]},
             )
+        try:
+            if umr:
+                raw = await self._hms.get(
+                    tenant, endpoints.DIAGNOSTICS_BY_PATIENT.format(umr=umr)
+                )
+            else:
+                # Prefer account-phone route; fallback to list search
+                try:
+                    raw = await self._hms.get(
+                        tenant,
+                        endpoints.DIAGNOSTICS_BY_ACCOUNT_PHONE.format(phone=phone),
+                    )
+                except httpx.HTTPError:
+                    raw = await self._hms.get(
+                        tenant,
+                        endpoints.DIAGNOSTICS_RECEIPTS,
+                        params={"search": phone, "limit": 10},
+                    )
+            receipts = slim_receipts(raw)
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={
-                    "bill": data,
-                    "note": "Closest HMS endpoint: patients/:id/interim-bill",
-                },
+                data={"count": len(receipts), "receipts": receipts},
             )
         except httpx.HTTPError as exc:
             return ToolResult(
-                id=call_id, name=self.name, success=False, error=str(exc)
+                id=call_id,
+                name=self.name,
+                success=False,
+                error=hms_error_message(exc),
+            )
+
+
+class GenerateBillHandler(ToolHandler):
+    """HMS GET /patients/:UMRNo/interim-bill"""
+
+    name = "generateBill"
+    description = (
+        "Fetch interim bill by UMR. If only phone is known, resolve patient first. "
+        "Ask for phone/UMR if missing."
+    )
+    parameters: dict[str, Any] = {}
+
+    def __init__(self, hms: HmsClient) -> None:
+        self._hms = hms
+
+    async def execute(
+        self,
+        *,
+        tenant: Tenant,
+        session: CallSession,
+        arguments: dict[str, Any],
+        call_id: str,
+    ) -> ToolResult:
+        umr = (arguments.get("umr") or arguments.get("patientId") or "").strip()
+        phone = (arguments.get("phone") or "").strip()
+        try:
+            if not umr and phone:
+                patients_raw = await self._hms.get(
+                    tenant, endpoints.PATIENT_BY_PHONE.format(phone=phone)
+                )
+                patients = slim_patients(patients_raw)
+                if not patients:
+                    return ToolResult(
+                        id=call_id,
+                        name=self.name,
+                        success=False,
+                        error="No patient found for that phone. Confirm the number.",
+                    )
+                if len(patients) > 1:
+                    return ToolResult(
+                        id=call_id,
+                        name=self.name,
+                        success=False,
+                        error="Multiple patients on this phone. Ask which name/UMR.",
+                        data={"patients": patients},
+                    )
+                umr = patients[0].get("umr") or ""
+            if not umr:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error="Need UMR or phone for bill. Ask the caller.",
+                    data={"missing": ["umr", "phone"]},
+                )
+            bill_params = (
+                {"endDate": arguments["endDate"]}
+                if arguments.get("endDate")
+                else {}
+            )
+            data = await self._hms.get(
+                tenant,
+                endpoints.PATIENT_INTERIM_BILL.format(umr=umr),
+                params=bill_params or None,
+            )
+            # Keep voice summary small
+            summary = {
+                "umr": umr,
+                "balanceDue": data.get("balanceDue") if isinstance(data, dict) else None,
+                "totalAdvancePaid": data.get("totalAdvancePaid")
+                if isinstance(data, dict)
+                else None,
+                "patientName": (
+                    (data.get("patient") or {}).get("name")
+                    if isinstance(data, dict)
+                    else None
+                ),
+            }
+            return ToolResult(
+                id=call_id,
+                name=self.name,
+                success=True,
+                data={"summary": summary, "bill": data},
+            )
+        except httpx.HTTPError as exc:
+            return ToolResult(
+                id=call_id,
+                name=self.name,
+                success=False,
+                error=hms_error_message(exc),
             )
 
 
 class SendWhatsappHandler(ToolHandler):
     """
-    TODO: HMS WhatsApp today is prescription-scoped only
-    (POST /prescriptions/:patientId/:prescriptionId/send-whatsapp).
+    HMS prescription WhatsApp only:
+    POST /prescriptions/:UMRNo/:prescriptionId/send-whatsapp
+    Body requires viewBaseUrl.
     """
 
     name = "sendWhatsapp"
-    description = "Send WhatsApp (limited)"
+    description = (
+        "Send prescription WhatsApp. Requires UMR (patientId) and prescriptionId. "
+        "Ask if missing. Not for free-form messages."
+    )
     parameters: dict[str, Any] = {}
 
-    def __init__(self, hms: HmsClient) -> None:
+    def __init__(self, hms: HmsClient, settings: Settings) -> None:
         self._hms = hms
+        self._settings = settings
 
     async def execute(
         self,
@@ -241,28 +331,44 @@ class SendWhatsappHandler(ToolHandler):
         arguments: dict[str, Any],
         call_id: str,
     ) -> ToolResult:
-        patient_id = arguments.get("patientId")
-        prescription_id = arguments.get("prescriptionId")
-        if not patient_id or not prescription_id:
+        umr = (
+            arguments.get("umr")
+            or arguments.get("patientId")
+            or ""
+        ).strip()
+        prescription_id = (arguments.get("prescriptionId") or "").strip()
+        missing: list[str] = []
+        if not umr:
+            missing.append("umr")
+        if not prescription_id:
+            missing.append("prescriptionId")
+        if missing:
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
                 error=(
-                    "TODO: General WhatsApp messaging is not available in HMS. "
-                    "Requires patientId and prescriptionId for prescription WhatsApp."
+                    "HMS WhatsApp is prescription-only. Need UMR and prescriptionId. "
+                    f"Missing: {', '.join(missing)}. Ask the caller / look up patient first."
                 ),
+                data={"missing": missing},
             )
+        view_base = view_base_url_for_tenant(
+            tenant, self._settings.hms_origin_host_pattern
+        )
         try:
             data = await self._hms.post(
                 tenant,
                 endpoints.PRESCRIPTION_WHATSAPP.format(
-                    patient_id=patient_id, prescription_id=prescription_id
+                    umr=umr, prescription_id=prescription_id
                 ),
-                json={},
+                json={"viewBaseUrl": view_base},
             )
             return ToolResult(id=call_id, name=self.name, success=True, data=data)
         except httpx.HTTPError as exc:
             return ToolResult(
-                id=call_id, name=self.name, success=False, error=str(exc)
+                id=call_id,
+                name=self.name,
+                success=False,
+                error=hms_error_message(exc),
             )

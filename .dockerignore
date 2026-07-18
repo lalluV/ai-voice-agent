@@ -8,7 +8,7 @@ __pycache__
 htmlcov
 .git
 .env
-*.md
 .DS_Store
 tests
 .mypy_cache
+docs

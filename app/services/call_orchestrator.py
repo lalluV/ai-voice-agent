@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import WebSocket
@@ -10,6 +11,7 @@ from app.core.logging import get_logger
 from app.core.metrics import ERRORS
 from app.domain.enums import CallEndReason, SessionStatus
 from app.domain.models import CallSession, Tenant
+from app.providers.base import VoiceProvider
 from app.providers.registry import ProviderRegistry
 from app.services.outbound import PlivoOutboundService
 from app.sessions.manager import SessionManager
@@ -32,9 +34,60 @@ class CallOrchestrator:
         self._providers = providers
         self._plivo = plivo
         self._live: dict[str, LiveCallContext] = {}
+        self._prewarm: dict[str, VoiceProvider] = {}
+        self._prewarm_tasks: dict[str, asyncio.Task[None]] = {}
 
     def get_live(self, session_id: str) -> LiveCallContext | None:
         return self._live.get(session_id)
+
+    def schedule_prewarm_outbound(self, session: CallSession, tenant: Tenant) -> None:
+        """Kick off Gemini connect during ring; do not await."""
+        existing = self._prewarm_tasks.get(session.session_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._prewarm_outbound(session, tenant),
+            name=f"prewarm-{session.session_id}",
+        )
+        self._prewarm_tasks[session.session_id] = task
+
+    async def _prewarm_outbound(self, session: CallSession, tenant: Tenant) -> None:
+        logger.info(
+            "outbound_prewarm_started",
+            session_id=session.session_id,
+            tenant_id=tenant.tenant_id,
+            call_id=session.call_id,
+        )
+        try:
+            provider = self._providers.create(tenant)
+            await provider.connect(session)
+            # Only store if session still alive (not hung up during connect)
+            if self._sessions.get(session.session_id) is None:
+                await provider.disconnect()
+                logger.info(
+                    "outbound_prewarm_discarded",
+                    session_id=session.session_id,
+                    reason="session_ended",
+                )
+                return
+            self._prewarm[session.session_id] = provider
+            logger.info(
+                "outbound_prewarm_ready",
+                session_id=session.session_id,
+                tenant_id=tenant.tenant_id,
+            )
+        except asyncio.CancelledError:
+            logger.info("outbound_prewarm_cancelled", session_id=session.session_id)
+            raise
+        except Exception:
+            ERRORS.labels(component="orchestrator").inc()
+            logger.exception(
+                "outbound_prewarm_failed",
+                session_id=session.session_id,
+                tenant_id=tenant.tenant_id,
+            )
+        finally:
+            self._prewarm_tasks.pop(session.session_id, None)
 
     async def transfer(
         self,
@@ -76,8 +129,24 @@ class CallOrchestrator:
         session.status = SessionStatus.CONNECTING
         await self._sessions.update(session)
 
-        provider = self._providers.create(tenant)
-        await provider.connect(session)
+        provider = await self._take_prewarmed_provider(session)
+        if provider is None:
+            logger.info(
+                "outbound_prewarm_miss",
+                session_id=session.session_id,
+                direction=session.direction,
+            )
+            provider = self._providers.create(tenant)
+            await provider.connect(session)
+        else:
+            logger.info(
+                "outbound_prewarm_reused",
+                session_id=session.session_id,
+                tenant_id=tenant.tenant_id,
+            )
+            arm = getattr(provider, "arm_greeting_grace", None)
+            if callable(arm):
+                arm()
 
         async def send_json(payload: dict[str, Any]) -> None:
             await websocket.send_json(payload)
@@ -110,6 +179,20 @@ class CallOrchestrator:
         )
         return ctx
 
+    async def _take_prewarmed_provider(
+        self, session: CallSession
+    ) -> VoiceProvider | None:
+        task = self._prewarm_tasks.get(session.session_id)
+        if task is not None and not task.done():
+            try:
+                await task
+            except Exception:
+                logger.exception(
+                    "outbound_prewarm_await_failed",
+                    session_id=session.session_id,
+                )
+        return self._prewarm.pop(session.session_id, None)
+
     async def on_media(self, session_id: str, payload_b64: str) -> None:
         ctx = self._live.get(session_id)
         if ctx and ctx.bridge:
@@ -122,15 +205,27 @@ class CallOrchestrator:
         reason: CallEndReason = CallEndReason.HANGUP,
         error: str | None = None,
     ) -> None:
+        task = self._prewarm_tasks.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        prewarm = self._prewarm.pop(session_id, None)
         ctx = self._live.pop(session_id, None)
-        if ctx is None:
-            await self._sessions.end(session_id, reason=reason, error_message=error)
-            return
-        if ctx.bridge:
-            await ctx.bridge.stop()
-        if ctx.provider:
+
+        provider: VoiceProvider | None = None
+        bridge: AudioBridge | None = None
+        if ctx is not None:
+            provider = ctx.provider
+            bridge = ctx.bridge
+        elif prewarm is not None:
+            provider = prewarm
+
+        if bridge is not None:
+            await bridge.stop()
+        if provider is not None:
             try:
-                await ctx.provider.disconnect()
+                await provider.disconnect()
             except Exception:  # pragma: no cover
                 ERRORS.labels(component="provider").inc()
                 logger.exception("provider_disconnect_failed", session_id=session_id)

@@ -55,3 +55,7 @@ class VoiceProvider(ABC):
     async def send_tool_result(self, result: ToolResult) -> None:
         """Optional: providers that need explicit tool response override this."""
         return None
+
+    def arm_greeting_grace(self) -> None:
+        """Optional: re-arm call-start interrupt shield when playback begins."""
+        return None

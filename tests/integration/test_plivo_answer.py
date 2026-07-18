@@ -22,6 +22,7 @@ async def test_answer_returns_stream_xml(sample_tenant_dict: dict) -> None:
     resolver = AsyncMock()
     resolver.resolve_inbound = AsyncMock(return_value=tenant)
     sessions = AsyncMock()
+    sessions.get_by_call_id = MagicMock(return_value=None)
     sessions.create = AsyncMock(return_value=session)
 
     app.state.tenant_resolver = resolver
@@ -45,6 +46,48 @@ async def test_answer_returns_stream_xml(sample_tenant_dict: dict) -> None:
     assert 'noiseCancellation="true"' in resp.text
     assert session.session_id in resp.text
     assert tenant.tenant_id in resp.text
+
+
+@pytest.mark.asyncio
+async def test_answer_reuses_prewarmed_outbound_session(
+    sample_tenant_dict: dict,
+) -> None:
+    app = FastAPI()
+    app.include_router(plivo_webhooks.router)
+
+    tenant = Tenant.model_validate(sample_tenant_dict)
+    session = CallSession(
+        tenant_id=tenant.tenant_id,
+        direction=CallDirection.OUTBOUND,
+        call_id="out-call-1",
+    )
+
+    resolver = AsyncMock()
+    resolver.resolve_outbound = AsyncMock(return_value=tenant)
+    sessions = AsyncMock()
+    sessions.get_by_call_id = MagicMock(return_value=session)
+    sessions.update = AsyncMock(return_value=None)
+    sessions.create = AsyncMock()
+
+    app.state.tenant_resolver = resolver
+    app.state.session_manager = sessions
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/plivo/answer",
+            data={
+                "CallUUID": "out-call-1",
+                "From": "+919876543210",
+                "To": "+911111111111",
+                "Direction": "outbound",
+            },
+        )
+    assert resp.status_code == 200
+    assert session.session_id in resp.text
+    sessions.create.assert_not_called()
+    sessions.update.assert_awaited()
+    resolver.resolve_outbound.assert_awaited()
 
 
 @pytest.mark.asyncio

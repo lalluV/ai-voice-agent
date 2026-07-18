@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import ERRORS, RECONNECTS
+from app.domain.enums import CallDirection
 from app.domain.models import CallSession, Tenant, ToolCall, ToolResult
 from app.prompts.loader import PromptLoader
 from app.providers.base import ProviderAudioEvent, ProviderEventType, VoiceProvider
@@ -107,15 +108,7 @@ class GeminiProvider(VoiceProvider):
         )
 
         try:
-            await self._live.send_realtime_input(
-                text=(
-                    f"కాల్ కనెక్ట్ అయింది. ఆస్పత్రి పేరు: {self._tenant.name}. "
-                    "తెలుగులో చాలా సహజంగా, చిన్నగా ఒక్క వాక్యంలో నమస్కారం చెప్పి "
-                    "ఎలా సహాయం కావాలో అడగండి. ఉదాహరణ: "
-                    f"'నమస్కారం, {self._tenant.name}, ఎలా సాయం చేయాలి?' "
-                    "English అడిగితే English లో మాట్లాడండి. Do not call any tools yet."
-                )
-            )
+            await self._live.send_realtime_input(text=self._greeting_seed(session))
         except Exception:  # pragma: no cover
             logger.exception("gemini_greeting_seed_failed")
 
@@ -125,6 +118,29 @@ class GeminiProvider(VoiceProvider):
             voice=voice_name,
             session_id=session.session_id,
             tenant_id=self._tenant.tenant_id,
+            direction=session.direction,
+        )
+
+    def arm_greeting_grace(self) -> None:
+        self._ignore_interrupt_until = (
+            time.monotonic() + self._settings.interrupt_grace_seconds
+        )
+
+    def _greeting_seed(self, session: CallSession) -> str:
+        name = self._tenant.name
+        if session.direction == CallDirection.OUTBOUND:
+            return (
+                f"Outbound call — the person just answered. Hospital: {name}. "
+                "Speak naturally in Telugu, one short sentence: greet them saying "
+                f"this call is from {name}, then ask how you can help. "
+                f"Example: 'నమస్కారం, {name} నుంచి కాల్, ఎలా సాయం చేయాలి?' "
+                "If they prefer English, switch to English. Do not call any tools yet."
+            )
+        return (
+            f"Call connected. Hospital name: {name}. "
+            "Speak naturally in Telugu, one short sentence: greet and ask how to help. "
+            f"Example: 'నమస్కారం, {name}, ఎలా సాయం చేయాలి?' "
+            "If they prefer English, switch to English. Do not call any tools yet."
         )
 
     async def disconnect(self) -> None:
@@ -333,5 +349,27 @@ class GeminiProvider(VoiceProvider):
                         type=ProviderEventType.TOOL_CALL, tool_call=call
                     )
                 )
+                await self._nudge_tool_filler()
                 result = await self.handle_tool_call(call)
                 await self.send_tool_result(result)
+
+    async def _nudge_tool_filler(self) -> None:
+        """Cover HMS/tool latency when the model skipped a hold phrase."""
+        if self._agent_speaking or self._live is None or not self._connected:
+            return
+        try:
+            async with self._send_lock:
+                if self._live is None or not self._connected:
+                    return
+                await self._live.send_realtime_input(
+                    text=(
+                        "Briefly say a short hold phrase now in the caller's language "
+                        "(Telugu default: ఒక్క క్షణం or చూస్తున్నాను). "
+                        "One short phrase only — do not call tools."
+                    )
+                )
+        except Exception:  # pragma: no cover
+            logger.exception(
+                "gemini_tool_filler_nudge_failed",
+                session_id=self._session.session_id if self._session else None,
+            )

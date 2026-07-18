@@ -52,14 +52,28 @@ async def plivo_answer(
             "<Response><Speak>Sorry, this number is not configured.</Speak><Hangup/></Response>"
         )
 
-    session = await sessions.create(
-        tenant_id=tenant.tenant_id,
-        direction=direction,
-        from_number=from_number,
-        to_number=to_number,
-        call_id=call_uuid,
-        metadata={"plivo_direction": direction_raw},
-    )
+    session = sessions.get_by_call_id(call_uuid) if call_uuid else None
+    if session is not None:
+        session.from_number = from_number
+        session.to_number = to_number
+        session.direction = direction
+        session.metadata["plivo_direction"] = direction_raw
+        await sessions.update(session)
+        logger.info(
+            "answer_session_reused",
+            session_id=session.session_id,
+            call_uuid=call_uuid,
+            direction=direction,
+        )
+    else:
+        session = await sessions.create(
+            tenant_id=tenant.tenant_id,
+            direction=direction,
+            from_number=from_number,
+            to_number=to_number,
+            call_id=call_uuid,
+            metadata={"plivo_direction": direction_raw},
+        )
 
     ws_url = settings.public_ws_base_url.rstrip("/") + "/ws/plivo/stream"
     extra = f"tenantId={tenant.tenant_id};sessionId={session.session_id}"
@@ -125,6 +139,8 @@ async def create_outbound_call(
 ) -> dict:
     tenant_repo = request.app.state.tenant_repo
     plivo = request.app.state.plivo_service
+    sessions = request.app.state.session_manager
+    orchestrator = request.app.state.orchestrator
     tenant = await tenant_repo.get(payload.tenant_id)
     if not tenant or not tenant.enabled:
         return {"success": False, "error": "Tenant not found or disabled"}
@@ -147,4 +163,17 @@ async def create_outbound_call(
         answer_url=answer_url,
         hangup_url=hangup_url,
     )
+    request_uuid = data.get("request_uuid")
+    if request_uuid:
+        session = await sessions.create(
+            tenant_id=tenant.tenant_id,
+            direction=CallDirection.OUTBOUND,
+            from_number=from_number,
+            to_number=payload.to_number,
+            call_id=str(request_uuid),
+            metadata={"plivo_direction": "outbound", "prewarm": True},
+        )
+        orchestrator.schedule_prewarm_outbound(session, tenant)
+    else:
+        logger.warning("outbound_missing_request_uuid", data=data)
     return {"success": True, "data": data}

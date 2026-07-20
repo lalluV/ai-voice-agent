@@ -14,6 +14,8 @@ from app.tools.base import ToolHandler
 from app.tools.helpers import (
     hms_error_message,
     normalize_doctor_list,
+    phone_missing_error,
+    phone_missing_payload,
     slim_patients,
     slim_receipts,
     view_base_url_for_tenant,
@@ -63,13 +65,31 @@ class DepartmentListHandler(ToolHandler):
             payload = {"count": len(slim), "departments": slim}
             if self._redis is not None:
                 await self._redis.set(cache_key, json.dumps(payload), ex=self._ttl)
+            if not slim:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "No departments returned. Do NOT invent department names. "
+                        "Tell the caller the list is unavailable and offer transfer."
+                    ),
+                    data={**payload, "do_not_retry": True},
+                )
+            payload["note"] = (
+                "Speak ONLY these department names. Never invent departments."
+            )
             return ToolResult(id=call_id, name=self.name, success=True, data=payload)
         except httpx.HTTPError as exc:
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=hms_error_message(exc),
+                error=(
+                    f"{hms_error_message(exc)}. Do NOT invent department names. "
+                    "Tell the caller and offer transfer."
+                ),
+                data={"do_not_retry": True, "count": 0, "departments": []},
             )
 
 
@@ -77,7 +97,8 @@ class DoctorAvailabilityHandler(ToolHandler):
     name = "doctorAvailability"
     description = (
         "List/filter doctors from HMS GET /staff/type/Doctor. "
-        "Call before bookAppointment when doctor is unclear."
+        "REQUIRED before naming any doctor or calling bookAppointment. "
+        "Never invent doctor names."
     )
     parameters: dict[str, Any] = {}
 
@@ -98,6 +119,7 @@ class DoctorAvailabilityHandler(ToolHandler):
             )
             doctors = normalize_doctor_list(raw)
             session.tool_context["doctors_all"] = doctors
+            session.tool_context["doctors_fetched"] = True
             doctor_name = (arguments.get("doctorName") or "").lower().strip()
             department = (arguments.get("department") or "").lower().strip()
             filtered = doctors
@@ -208,12 +230,13 @@ class LabReportsHandler(ToolHandler):
         phone = (arguments.get("phone") or "").strip()
         umr = (arguments.get("umr") or arguments.get("patientId") or "").strip()
         if not phone and not umr:
+            payload = phone_missing_payload(session)
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error="Need phone or UMR for lab reports. Ask the caller.",
-                data={"missing": ["phone"]},
+                error=phone_missing_error(session),
+                data=payload,
             )
         try:
             if umr:
@@ -234,18 +257,40 @@ class LabReportsHandler(ToolHandler):
                         params={"search": phone, "limit": 10},
                     )
             receipts = slim_receipts(raw)
+            if not receipts:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "No lab/diagnostics receipts found. Do NOT invent report "
+                        "status. Tell the caller not found and offer transfer."
+                    ),
+                    data={"count": 0, "receipts": [], "do_not_retry": True},
+                )
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={"count": len(receipts), "receipts": receipts},
+                data={
+                    "count": len(receipts),
+                    "receipts": receipts,
+                    "note": (
+                        "Summarize ONLY these receipts. Never invent report status "
+                        "or amounts."
+                    ),
+                },
             )
         except httpx.HTTPError as exc:
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=hms_error_message(exc),
+                error=(
+                    f"{hms_error_message(exc)}. Do NOT invent lab report data. "
+                    "Tell the caller and offer transfer."
+                ),
+                data={"do_not_retry": True, "count": 0, "receipts": []},
             )
 
 
@@ -295,12 +340,14 @@ class GenerateBillHandler(ToolHandler):
                     )
                 umr = patients[0].get("umr") or ""
             if not umr:
+                payload = phone_missing_payload(session)
+                payload["missing"] = ["umr", "phone"]
                 return ToolResult(
                     id=call_id,
                     name=self.name,
                     success=False,
-                    error="Need UMR or phone for bill. Ask the caller.",
-                    data={"missing": ["umr", "phone"]},
+                    error=phone_missing_error(session),
+                    data=payload,
                 )
             bill_params = (
                 {"endDate": arguments["endDate"]}
@@ -329,14 +376,25 @@ class GenerateBillHandler(ToolHandler):
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={"summary": summary, "bill": data},
+                data={
+                    "summary": summary,
+                    "bill": data,
+                    "note": (
+                        "Speak ONLY balanceDue/summary from this result. "
+                        "Never invent bill amounts."
+                    ),
+                },
             )
         except httpx.HTTPError as exc:
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=hms_error_message(exc),
+                error=(
+                    f"{hms_error_message(exc)}. Do NOT invent bill amounts. "
+                    "Tell the caller and offer transfer."
+                ),
+                data={"do_not_retry": True},
             )
 
 

@@ -105,14 +105,47 @@ class CallOrchestrator:
         session.current_intent = "transfer"
         session.metadata["transfer_reason"] = reason
         await self._sessions.update(session)
+
+        # Tear down AI stream first — Transfer does not interrupt an active Stream.
+        ctx = self._live.pop(session.session_id, None)
+        if ctx is not None:
+            if ctx.bridge is not None:
+                await ctx.bridge.stop()
+            if ctx.provider is not None:
+                try:
+                    await ctx.provider.disconnect()
+                except Exception:  # pragma: no cover
+                    logger.exception(
+                        "provider_disconnect_failed_on_transfer",
+                        session_id=session.session_id,
+                    )
+
+        try:
+            await self._plivo.stop_stream(call_uuid=session.call_id)
+        except Exception:
+            logger.exception(
+                "plivo_stop_stream_failed",
+                call_uuid=session.call_id,
+                session_id=session.session_id,
+            )
+
         result = await self._plivo.transfer_call(
             call_uuid=session.call_id,
             destination=dest,
             caller_id=session.to_number
             or (tenant.plivo_numbers[0] if tenant.plivo_numbers else None),
         )
+
+        if ctx is not None and ctx.websocket is not None:
+            try:
+                await ctx.websocket.close(code=1000)
+            except Exception:  # pragma: no cover
+                logger.debug(
+                    "websocket_close_on_transfer_failed",
+                    session_id=session.session_id,
+                )
+
         await self._sessions.end(session.session_id, reason=CallEndReason.TRANSFER)
-        self._live.pop(session.session_id, None)
         return result
 
     async def start_stream(
@@ -168,7 +201,11 @@ class CallOrchestrator:
         await self._sessions.update(session)
 
         ctx = LiveCallContext(
-            session=session, tenant=tenant, provider=provider, bridge=bridge
+            session=session,
+            tenant=tenant,
+            provider=provider,
+            bridge=bridge,
+            websocket=websocket,
         )
         self._live[session.session_id] = ctx
         logger.info(

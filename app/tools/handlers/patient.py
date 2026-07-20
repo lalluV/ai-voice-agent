@@ -10,6 +10,8 @@ from app.hms.client import HmsClient
 from app.tools.base import ToolHandler
 from app.tools.helpers import (
     hms_error_message,
+    phone_missing_error,
+    phone_missing_payload,
     require_fields,
     slim_patients,
 )
@@ -37,12 +39,13 @@ class PatientSearchHandler(ToolHandler):
         phone = (arguments.get("phone") or "").strip()
         search = (arguments.get("search") or arguments.get("name") or "").strip()
         if not phone and not search:
+            payload = phone_missing_payload(session)
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error="Missing phone or name. Ask the caller for phone number first.",
-                data={"missing": ["phone"]},
+                error=phone_missing_error(session),
+                data=payload,
             )
         if search and len(search) < 2 and not phone:
             return ToolResult(
@@ -65,11 +68,29 @@ class PatientSearchHandler(ToolHandler):
                 )
             patients = slim_patients(raw)
             session.tool_context["last_patients"] = patients
+            if not patients:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "No patient found. Do NOT invent a patient name or UMR. "
+                        "Tell the caller not found and ask to confirm phone/name, "
+                        "or offer transfer / createPatient if they want to register."
+                    ),
+                    data={"count": 0, "patients": [], "do_not_retry": True},
+                )
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={"count": len(patients), "patients": patients},
+                data={
+                    "count": len(patients),
+                    "patients": patients,
+                    "note": (
+                        "Speak ONLY these patients. Never invent extra names or UMR."
+                    ),
+                },
             )
         except httpx.HTTPError as exc:
             return ToolResult(
@@ -113,9 +134,18 @@ class CreatePatientHandler(ToolHandler):
             },
         )
         if missing:
+            if missing[0] == "phone":
+                payload = phone_missing_payload(session)
+                payload["missing"] = missing
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=phone_missing_error(session),
+                    data=payload,
+                )
             hints = {
                 "name": "మీ పేరు చెప్తారా? / What is the patient name?",
-                "phone": "ఫోన్ నంబర్ చెప్తారా?",
                 "gender": "gender అడగండి (male/female)",
                 "age": "వయసు అడగండి",
             }
@@ -125,7 +155,7 @@ class CreatePatientHandler(ToolHandler):
                 name=self.name,
                 success=False,
                 error=f"Missing required fields: {', '.join(missing)}. {ask}",
-                data={"missing": missing},
+                data={"missing": missing, "do_not_retry": True},
             )
 
         try:
@@ -147,7 +177,13 @@ class CreatePatientHandler(ToolHandler):
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={"patient": slim[0] if slim else data},
+                data={
+                    "patient": slim[0] if slim else data,
+                    "note": (
+                        "Confirm ONLY this patient/UMR from the result. "
+                        "Never invent UMR."
+                    ),
+                },
             )
         except httpx.HTTPError as exc:
             return ToolResult(

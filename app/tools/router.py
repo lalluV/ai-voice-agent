@@ -15,8 +15,10 @@ _MAX_IDENTICAL_CALLS = 2
 _MAX_CONSECUTIVE_SAME_TOOL = 3
 
 _SPEAK_NOW = (
-    "Speak this result to the caller now in their language. "
-    "Do not invent names or data. "
+    "Speak this tool result to the caller now in their language. "
+    "Use ONLY data present in this result — do not invent names, "
+    "UMR, departments, amounts, statuses, or appointments. "
+    "If empty/error, say unavailable/not found. "
     "Do not call the same tool again unless the caller gave new information."
 )
 

@@ -4,6 +4,9 @@ from typing import Any
 
 import httpx
 
+from app.domain.enums import CallDirection
+from app.domain.models import CallSession, _normalize_phone
+
 
 def hms_error_message(exc: BaseException) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
@@ -168,3 +171,66 @@ def view_base_url_for_tenant(tenant: Any, origin_pattern: str) -> str:
     if explicit:
         return str(explicit).rstrip("/")
     return origin_pattern.format(subdomain=tenant.hms_subdomain).rstrip("/")
+
+
+def customer_phone(session: CallSession) -> str | None:
+    """Phone of the person on the line (inbound From / outbound To)."""
+    raw = (
+        session.to_number
+        if session.direction == CallDirection.OUTBOUND
+        else session.from_number
+    )
+    if not raw:
+        return None
+    normalized = _normalize_phone(raw)
+    digits = "".join(c for c in normalized if c.isdigit())
+    if len(digits) < 8:
+        return None
+    return normalized
+
+
+def format_phone_for_speech(phone: str) -> str:
+    """Group digits for natural TTS (Indian mobile → 5+5)."""
+    digits = "".join(c for c in phone if c.isdigit())
+    if digits.startswith("91") and len(digits) >= 12:
+        digits = digits[-10:]
+    elif len(digits) > 10:
+        digits = digits[-10:]
+    if len(digits) == 10:
+        return f"{digits[:5]} {digits[5:]}"
+    if len(digits) >= 6:
+        mid = len(digits) // 2
+        return f"{digits[:mid]} {digits[mid:]}"
+    return digits or phone
+
+
+def phone_missing_payload(session: CallSession) -> dict[str, Any]:
+    """Tool data when phone is required — force offer/verify flow."""
+    number = customer_phone(session)
+    spoken = format_phone_for_speech(number) if number else None
+    data: dict[str, Any] = {
+        "missing": ["phone"],
+        "do_not_retry": True,
+    }
+    if number and spoken:
+        data["callerNumber"] = number
+        data["callerNumberSpoken"] = spoken
+        data["instruction"] = (
+            f"Phone needed. First ask if they want to use this calling number "
+            f"({spoken}) or another. Wait for their answer. "
+            f"If they give another number, or confirm this one, read the full "
+            f"number back once for verification and wait for yes. "
+            f"Only then call this tool again with phone set. Do not invent digits."
+        )
+    else:
+        data["instruction"] = (
+            "Phone needed but calling number is unknown. Ask for the number, "
+            "then read it back once for verification and wait for yes before "
+            "calling this tool again."
+        )
+    return data
+
+
+def phone_missing_error(session: CallSession) -> str:
+    payload = phone_missing_payload(session)
+    return str(payload.get("instruction") or "Ask for phone and verify it.")

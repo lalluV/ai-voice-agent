@@ -57,6 +57,21 @@ class PlivoOutboundService:
         logger.info("outbound_call_created", to=to_number, from_number=from_number)
         return data
 
+    async def stop_stream(self, *, call_uuid: str) -> None:
+        """
+        Stop the active bidirectional Stream so Transfer can fetch new XML.
+
+        With keepCallAlive=true the call stays up; without stopping the stream,
+        Transfer is accepted but Dial XML is never executed.
+        """
+        if self._client is None:
+            raise RuntimeError("PlivoOutboundService not started")
+        response = await self._client.delete(f"Call/{call_uuid}/Stream/")
+        # 404 = stream already gone; still fine to proceed with transfer.
+        if response.status_code not in (200, 204, 404):
+            response.raise_for_status()
+        logger.info("plivo_stream_stopped", call_uuid=call_uuid, status=response.status_code)
+
     async def transfer_call(
         self,
         *,

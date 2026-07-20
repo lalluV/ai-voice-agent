@@ -11,6 +11,8 @@ from app.tools.base import ToolHandler
 from app.tools.helpers import (
     hms_error_message,
     normalize_doctor_list,
+    phone_missing_error,
+    phone_missing_payload,
     resolve_doctor,
 )
 
@@ -18,8 +20,9 @@ from app.tools.helpers import (
 class BookAppointmentHandler(ToolHandler):
     name = "bookAppointment"
     description = (
-        "Book an appointment ONLY after collecting patient name, phone, doctor, date, and time. "
-        "Call doctorAvailability first to resolve the doctor."
+        "Book an appointment ONLY after doctorAvailability in this call, "
+        "and after collecting patient name, phone, doctor, date, and time. "
+        "doctorName must be an exact name from doctorAvailability — never invent."
     )
     parameters: dict[str, Any] = {}
 
@@ -57,6 +60,15 @@ class BookAppointmentHandler(ToolHandler):
         if not time_slot:
             missing.append("time")
         if missing:
+            if "phone" in missing and len(missing) == 1:
+                payload = phone_missing_payload(session)
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=phone_missing_error(session),
+                    data=payload,
+                )
             return ToolResult(
                 id=call_id,
                 name=self.name,
@@ -65,9 +77,27 @@ class BookAppointmentHandler(ToolHandler):
                     "Missing required fields: "
                     + ", ".join(missing)
                     + ". Ask the caller for these one at a time. "
+                    "For phone: offer the calling number first (use this or another?), "
+                    "then read it back to verify. "
                     "Do not call bookAppointment again until they answer."
                 ),
                 data={"missing": missing, "do_not_retry": True},
+            )
+
+        if not session.tool_context.get("doctors_fetched"):
+            return ToolResult(
+                id=call_id,
+                name=self.name,
+                success=False,
+                error=(
+                    "Call doctorAvailability first and wait for its result. "
+                    "Do NOT invent or guess doctor names. "
+                    "Then call bookAppointment with an exact doctorName from that list."
+                ),
+                data={
+                    "missing_tool": "doctorAvailability",
+                    "do_not_retry": True,
+                },
             )
 
         try:
@@ -205,11 +235,13 @@ class CancelAppointmentHandler(ToolHandler):
                 phone = arguments.get("phone")
                 date = arguments.get("date")
                 if not phone:
+                    payload = phone_missing_payload(session)
                     return ToolResult(
                         id=call_id,
                         name=self.name,
                         success=False,
-                        error="Need appointmentId or phone (+ optional date). Ask the caller.",
+                        error=phone_missing_error(session),
+                        data=payload,
                     )
                 listing = await self._hms.get(
                     tenant,

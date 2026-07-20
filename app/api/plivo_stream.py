@@ -126,7 +126,12 @@ async def plivo_stream(websocket: WebSocket) -> None:
     finally:
         if session_id:
             session = sessions.get(session_id)
-            if session and session.status != SessionStatus.ENDED:
+            # Transfer already ends the session; don't overwrite as hangup.
+            if (
+                session
+                and session.status != SessionStatus.ENDED
+                and session.status != SessionStatus.TRANSFERRING
+            ):
                 await orchestrator.end_stream(
                     session_id, reason=CallEndReason.HANGUP
                 )

@@ -9,8 +9,11 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         {
             "name": "patientSearch",
             "description": (
+                "REQUIRED before saying any patient name/UMR. "
                 "Search HMS patients. Prefer phone. "
-                "Ask for phone or name if missing. Do not guess."
+                "If phone needed: offer the calling number first "
+                "(use this or another?), then read back to verify. "
+                "Speak ONLY patients from the result. Never invent patients/UMR."
             ),
             "parameters": {
                 "type": "object",
@@ -25,7 +28,9 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
             "name": "createPatient",
             "description": (
                 "Register OP patient. HMS requires name, gender, age, phone. "
-                "Ask one missing field at a time before calling."
+                "Ask one missing field at a time. For phone: offer calling number "
+                "first, then verify by reading back before calling. "
+                "After success, speak UMR only if returned — never invent."
             ),
             "parameters": {
                 "type": "object",
@@ -41,9 +46,12 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         {
             "name": "doctorAvailability",
             "description": (
-                "List doctors from HMS staff (type Doctor). "
-                "Call once when doctor is unclear. Never invent doctor names. "
-                "If empty/error, tell the caller and stop — do not retry in a loop."
+                "REQUIRED before saying any doctor name or booking. "
+                "Fetches live doctors from HMS GET /staff/type/Doctor. "
+                "You know zero doctors until this returns. "
+                "Call once (with doctorName/department filters if known), "
+                "then speak ONLY names from the result. "
+                "Never invent names. If empty/error, tell caller and stop — no retry loop."
             ),
             "parameters": {
                 "type": "object",
@@ -55,15 +63,22 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         },
         {
             "name": "departmentList",
-            "description": "List HMS departments. Use when caller asks for departments.",
+            "description": (
+                "REQUIRED before saying any department name. "
+                "List HMS departments. Speak ONLY names from the result. "
+                "Never invent departments. If empty/error, say unavailable."
+            ),
             "parameters": {"type": "object", "properties": {}},
         },
         {
             "name": "bookAppointment",
             "description": (
-                "Book HMS appointment. Requires name, phone, doctorName "
-                "(from doctorAvailability), date YYYY-MM-DD, time. "
-                "Ask for any missing field — never call incomplete."
+                "Book HMS appointment. FORBIDDEN until doctorAvailability "
+                "succeeded in this call. Requires name, phone, doctorName "
+                "(exact name from that tool result), date YYYY-MM-DD, time. "
+                "For phone: offer calling number first, then verify by reading back. "
+                "Ask for any missing field — never call incomplete. "
+                "Never invent doctorName. Confirm only what the API returns."
             ),
             "parameters": {
                 "type": "object",
@@ -83,7 +98,9 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
             "name": "cancelAppointment",
             "description": (
                 "Cancel appointment (soft status=cancelled). "
-                "Need appointmentId or phone (+ optional date). Ask if missing."
+                "Need appointmentId or phone (+ optional date). "
+                "For phone: offer calling number first, then verify. "
+                "Confirm cancel only from tool result — never invent appointments."
             ),
             "parameters": {
                 "type": "object",
@@ -97,7 +114,9 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         {
             "name": "labReports",
             "description": (
-                "Lab/diagnostics receipts from HMS. Need phone or UMR. Ask if missing."
+                "REQUIRED before saying any lab/report status. "
+                "Lab/diagnostics receipts from HMS. Need phone or UMR. "
+                "Speak ONLY receipt fields from the result — never invent reports."
             ),
             "parameters": {
                 "type": "object",
@@ -114,8 +133,9 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         {
             "name": "generateBill",
             "description": (
+                "REQUIRED before saying any bill/balance. "
                 "Interim bill via HMS patients/:UMR/interim-bill. "
-                "Need UMR or phone. Ask if missing."
+                "Need UMR or phone. Speak ONLY amounts from the result — never invent."
             ),
             "parameters": {
                 "type": "object",
@@ -130,7 +150,8 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         {
             "name": "sendWhatsapp",
             "description": (
-                "Send prescription WhatsApp only. Needs UMR + prescriptionId. "
+                "Send prescription WhatsApp only. Needs UMR + prescriptionId "
+                "from prior tool results — never invent IDs. "
                 "Not for free-text messages. Ask if missing."
             ),
             "parameters": {

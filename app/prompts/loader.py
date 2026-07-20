@@ -38,6 +38,8 @@ class PromptLoader:
         *,
         hospital_name: str,
         hospital_blurb: str | None = None,
+        caller_number: str | None = None,
+        caller_number_spoken: str | None = None,
     ) -> str:
         receptionist = self.load(version, "system_receptionist.md")
         language = self.load(version, "language_policy.md")
@@ -48,8 +50,24 @@ class PromptLoader:
             f"Hospital name: {hospital_name}\n"
             f"{blurb}\n"
             f"Prompt version: {version}\n"
-            f"Loaded at: {int(time.time())}\n\n"
+            f"Loaded at: {int(time.time())}\n"
         )
+        if caller_number:
+            spoken = caller_number_spoken or caller_number
+            header += (
+                f"\n# Caller on this line\n"
+                f"Calling number (known from the phone network): {caller_number}\n"
+                f"Say it naturally as: {spoken}\n"
+                f"Whenever any flow needs a phone number, offer this number first "
+                f"(use this or another?), then read back the chosen number to verify.\n"
+            )
+        else:
+            header += (
+                "\n# Caller on this line\n"
+                "Calling number is unknown. If a phone is needed, ask for it, "
+                "then read it back once to verify before using it.\n"
+            )
+        header += "\n"
         return "\n\n".join([header, receptionist, language, tools])
 
 

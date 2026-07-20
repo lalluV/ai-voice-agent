@@ -14,6 +14,7 @@ from app.domain.models import CallSession, Tenant, ToolCall, ToolResult
 from app.prompts.loader import PromptLoader
 from app.providers.base import ProviderAudioEvent, ProviderEventType, VoiceProvider
 from app.tools.definitions import gemini_function_declarations
+from app.tools.helpers import customer_phone, format_phone_for_speech
 from app.tools.router import ToolRouter
 
 logger = get_logger(__name__)
@@ -66,11 +67,18 @@ class GeminiProvider(VoiceProvider):
         except ImportError as exc:
             raise RuntimeError("google-genai package is required") from exc
 
+        caller = customer_phone(session)
+        caller_spoken = format_phone_for_speech(caller) if caller else None
         system_instruction = self._prompt_loader.build_system_instruction(
             self._tenant.prompt_version,
             hospital_name=self._tenant.name,
             hospital_blurb=self._tenant.hospital_blurb,
+            caller_number=caller,
+            caller_number_spoken=caller_spoken,
         )
+        if caller:
+            session.tool_context["caller_phone"] = caller
+            session.tool_context["caller_phone_spoken"] = caller_spoken
 
         self._client = genai.Client(api_key=api_key)
         model = self._settings.gemini_model
@@ -238,9 +246,11 @@ class GeminiProvider(VoiceProvider):
             "data": result.data,
             "error": result.error,
             "instruction": (
-                "Speak this result to the caller now. "
-                "Do not invent data. Do not call the same tool again unless "
-                "the caller gave new information."
+                "Speak this tool result to the caller now. "
+                "Use ONLY data in this result — never invent names, UMR, "
+                "departments, amounts, or statuses. "
+                "If empty/error, say unavailable/not found. "
+                "Do not call the same tool again unless the caller gave new information."
             ),
         }
         if isinstance(result.data, dict) and result.data.get("do_not_retry"):

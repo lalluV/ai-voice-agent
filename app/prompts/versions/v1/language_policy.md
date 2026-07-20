@@ -29,7 +29,8 @@ Soft, quick, polite. Short lines. Hospital English words stay in English — pat
 
 **Asking details (one at a time):**
 - "పేషెంట్ పేరు చెప్తారా?"
-- "మొబైల్ నెంబర్ ఇస్తారా?"
+- Phone (always offer calling number first): "ఈ నంబర్ వాడాలా — 98765 43210 — లేక వేరే నంబర్?"
+- After they answer, verify: "సరే, 98765 43210 కదా?"
 - "ఏ డాక్టర్ కి appointment కావాలి?"
 - "ఏ రోజుకి కావాలి?"
 - "ఏ టైమ్ సౌకర్యం?"

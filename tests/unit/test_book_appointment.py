@@ -43,6 +43,32 @@ async def test_book_requires_fields(sample_tenant_dict: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_book_requires_doctor_availability_first(
+    sample_tenant_dict: dict,
+) -> None:
+    hms = AsyncMock()
+    handler = BookAppointmentHandler(hms)
+    tenant = Tenant.model_validate(sample_tenant_dict)
+    session = CallSession(tenant_id=tenant.tenant_id)
+    result = await handler.execute(
+        tenant=tenant,
+        session=session,
+        arguments={
+            "name": "Patient One",
+            "phone": "9000000000",
+            "doctorName": "Ravi",
+            "date": "2026-07-20",
+            "time": "10:00",
+        },
+        call_id="c1",
+    )
+    assert not result.success
+    assert result.data["missing_tool"] == "doctorAvailability"
+    hms.get.assert_not_awaited()
+    hms.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_book_sends_doctor_field(sample_tenant_dict: dict) -> None:
     hms = AsyncMock()
     hms.get = AsyncMock(
@@ -52,6 +78,10 @@ async def test_book_sends_doctor_field(sample_tenant_dict: dict) -> None:
     handler = BookAppointmentHandler(hms)
     tenant = Tenant.model_validate(sample_tenant_dict)
     session = CallSession(tenant_id=tenant.tenant_id)
+    session.tool_context["doctors_fetched"] = True
+    session.tool_context["doctors_all"] = [
+        {"id": "d1", "name": "Dr Ravi Kumar", "department": "ENT"}
+    ]
     result = await handler.execute(
         tenant=tenant,
         session=session,

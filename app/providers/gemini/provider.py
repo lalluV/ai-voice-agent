@@ -51,6 +51,9 @@ class GeminiProvider(VoiceProvider):
         self._connected_at = 0.0
         self._ignore_interrupt_until = 0.0
         self._agent_speaking = False
+        # Gemini Live rejects sendRealtimeInput while a tool call is pending
+        # and closes the socket with 1008 (policy violation). Gate mic audio.
+        self._tool_call_pending = False
 
     async def connect(self, session: CallSession) -> None:
         self._session = session
@@ -183,11 +186,19 @@ class GeminiProvider(VoiceProvider):
         # Real barge-in still works after grace via Plivo clear + user speech after.
         if self._agent_speaking and time.monotonic() < self._ignore_interrupt_until:
             return
+        if self._tool_call_pending:
+            return
         from google.genai import types
 
         try:
             async with self._send_lock:
-                if not self._connected or self._live is None:
+                # Re-check under lock: tool handler may have set the gate
+                # between the early return above and acquiring the lock.
+                if (
+                    not self._connected
+                    or self._live is None
+                    or self._tool_call_pending
+                ):
                     return
                 await self._live.send_realtime_input(
                     audio=types.Blob(
@@ -339,29 +350,39 @@ class GeminiProvider(VoiceProvider):
 
         tool_call = getattr(response, "tool_call", None)
         if tool_call and getattr(tool_call, "function_calls", None):
-            for fc in tool_call.function_calls:
-                args = fc.args if isinstance(fc.args, dict) else {}
-                if isinstance(fc.args, str):
-                    try:
-                        args = json.loads(fc.args)
-                    except json.JSONDecodeError:
-                        args = {"raw": fc.args}
-                call = ToolCall(
-                    id=getattr(fc, "id", None) or fc.name,
-                    name=fc.name,
-                    arguments=args or {},
-                )
-                logger.info(
-                    "gemini_tool_call",
-                    tool=call.name,
-                    session_id=self._session.session_id if self._session else None,
-                )
-                await self._queue.put(
-                    ProviderAudioEvent(
-                        type=ProviderEventType.TOOL_CALL, tool_call=call
+            # Block mic audio until every functionResponse is sent; otherwise
+            # Live aborts the session with websocket 1008. Set the gate under
+            # the send lock so in-flight send_audio cannot race past it.
+            async with self._send_lock:
+                self._tool_call_pending = True
+            try:
+                for fc in tool_call.function_calls:
+                    args = fc.args if isinstance(fc.args, dict) else {}
+                    if isinstance(fc.args, str):
+                        try:
+                            args = json.loads(fc.args)
+                        except json.JSONDecodeError:
+                            args = {"raw": fc.args}
+                    call = ToolCall(
+                        id=getattr(fc, "id", None) or fc.name,
+                        name=fc.name,
+                        arguments=args or {},
                     )
-                )
-                # Do not send realtime text while a function call is pending —
-                # that confuses Live into more tool loops / silence.
-                result = await self.handle_tool_call(call)
-                await self.send_tool_result(result)
+                    logger.info(
+                        "gemini_tool_call",
+                        tool=call.name,
+                        session_id=(
+                            self._session.session_id if self._session else None
+                        ),
+                    )
+                    await self._queue.put(
+                        ProviderAudioEvent(
+                            type=ProviderEventType.TOOL_CALL, tool_call=call
+                        )
+                    )
+                    # Do not send realtime text while a function call is pending —
+                    # that confuses Live into more tool loops / silence.
+                    result = await self.handle_tool_call(call)
+                    await self.send_tool_result(result)
+            finally:
+                self._tool_call_pending = False

@@ -97,6 +97,7 @@ class DoctorAvailabilityHandler(ToolHandler):
                 tenant, endpoints.STAFF_BY_TYPE.format(staff_type="Doctor")
             )
             doctors = normalize_doctor_list(raw)
+            session.tool_context["doctors_all"] = doctors
             doctor_name = (arguments.get("doctorName") or "").lower().strip()
             department = (arguments.get("department") or "").lower().strip()
             filtered = doctors
@@ -119,16 +120,42 @@ class DoctorAvailabilityHandler(ToolHandler):
                 }
                 for d in filtered[:20]
             ]
+            if not doctors:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "HMS returned no doctors. Do NOT invent doctor names. "
+                        "Tell the caller the doctor list is unavailable and offer "
+                        "human transfer. Do NOT call doctorAvailability again."
+                    ),
+                    data={
+                        "count": 0,
+                        "doctors": [],
+                        "do_not_retry": True,
+                    },
+                )
             if not slim:
                 return ToolResult(
                     id=call_id,
                     name=self.name,
                     success=False,
                     error=(
-                        "No matching doctors. Ask department or another doctor name, "
-                        "then retry doctorAvailability."
+                        "No matching doctors for that name/department. "
+                        "Do NOT invent names. Ask the caller for another doctor "
+                        "name or department, then wait for their answer before "
+                        "calling any tool again."
                     ),
-                    data={"count": 0, "doctors": []},
+                    data={
+                        "count": 0,
+                        "doctors": [],
+                        "availableSample": [
+                            {"name": d["name"], "department": d.get("department") or ""}
+                            for d in doctors[:8]
+                        ],
+                        "do_not_retry": True,
+                    },
                 )
             return ToolResult(
                 id=call_id,
@@ -137,7 +164,11 @@ class DoctorAvailabilityHandler(ToolHandler):
                 data={
                     "count": len(filtered),
                     "doctors": slim,
-                    "note": "Confirm exact doctorName with caller, then bookAppointment.",
+                    "note": (
+                        "Read 2–3 names max, ask which one. "
+                        "Use the exact doctorName from this list for bookAppointment. "
+                        "Never invent doctors."
+                    ),
                 },
             )
         except httpx.HTTPError as exc:
@@ -145,7 +176,11 @@ class DoctorAvailabilityHandler(ToolHandler):
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=hms_error_message(exc),
+                error=(
+                    f"{hms_error_message(exc)}. Do NOT invent doctor names. "
+                    "Tell the caller and offer transfer. Do NOT retry this tool now."
+                ),
+                data={"do_not_retry": True, "count": 0, "doctors": []},
             )
 
 

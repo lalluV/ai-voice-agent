@@ -131,16 +131,20 @@ class GeminiProvider(VoiceProvider):
         if session.direction == CallDirection.OUTBOUND:
             return (
                 f"Outbound call — the person just answered. Hospital: {name}. "
-                "Speak naturally in Telugu, one short sentence: greet them saying "
-                f"this call is from {name}, then ask how you can help. "
-                f"Example: 'నమస్కారం, {name} నుంచి కాల్, ఎలా సాయం చేయాలి?' "
-                "If they prefer English, switch to English. Do not call any tools yet."
+                "Speak like a real hospital receptionist in everyday Telugu, "
+                "one short natural sentence: say you are calling from the hospital, "
+                "then ask if they need any help. "
+                f"Example: 'నమస్కారం, {name} నుంచి మాట్లాడుతున్నాను. ఏమైనా సహాయం కావాలా?' "
+                "Do not sound textbook or stiff. If they prefer English, switch. "
+                "Do not call any tools yet."
             )
         return (
             f"Call connected. Hospital name: {name}. "
-            "Speak naturally in Telugu, one short sentence: greet and ask how to help. "
-            f"Example: 'నమస్కారం, {name}, ఎలా సాయం చేయాలి?' "
-            "If they prefer English, switch to English. Do not call any tools yet."
+            "Speak like a real hospital receptionist in everyday Telugu, "
+            "one short natural sentence: greet and ask how you can help. "
+            f"Example: 'నమస్కారం, {name}. ఎలా సహాయం చేయాలి?' "
+            "Do not sound textbook or stiff. If they prefer English, switch. "
+            "Do not call any tools yet."
         )
 
     async def disconnect(self) -> None:
@@ -218,14 +222,22 @@ class GeminiProvider(VoiceProvider):
             return
         from google.genai import types
 
+        payload: dict[str, Any] = {
+            "success": result.success,
+            "data": result.data,
+            "error": result.error,
+            "instruction": (
+                "Speak this result to the caller now. "
+                "Do not invent data. Do not call the same tool again unless "
+                "the caller gave new information."
+            ),
+        }
+        if isinstance(result.data, dict) and result.data.get("do_not_retry"):
+            payload["do_not_retry"] = True
         response = types.FunctionResponse(
             id=result.id,
             name=result.name,
-            response={
-                "success": result.success,
-                "data": result.data,
-                "error": result.error,
-            },
+            response=payload,
         )
         async with self._send_lock:
             await self._live.send_tool_response(function_responses=[response])
@@ -349,27 +361,7 @@ class GeminiProvider(VoiceProvider):
                         type=ProviderEventType.TOOL_CALL, tool_call=call
                     )
                 )
-                await self._nudge_tool_filler()
+                # Do not send realtime text while a function call is pending —
+                # that confuses Live into more tool loops / silence.
                 result = await self.handle_tool_call(call)
                 await self.send_tool_result(result)
-
-    async def _nudge_tool_filler(self) -> None:
-        """Cover HMS/tool latency when the model skipped a hold phrase."""
-        if self._agent_speaking or self._live is None or not self._connected:
-            return
-        try:
-            async with self._send_lock:
-                if self._live is None or not self._connected:
-                    return
-                await self._live.send_realtime_input(
-                    text=(
-                        "Briefly say a short hold phrase now in the caller's language "
-                        "(Telugu default: ఒక్క క్షణం or చూస్తున్నాను). "
-                        "One short phrase only — do not call tools."
-                    )
-                )
-        except Exception:  # pragma: no cover
-            logger.exception(
-                "gemini_tool_filler_nudge_failed",
-                session_id=self._session.session_id if self._session else None,
-            )

@@ -42,7 +42,8 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
             "name": "doctorAvailability",
             "description": (
                 "List doctors from HMS staff (type Doctor). "
-                "ALWAYS call before bookAppointment if doctor not confirmed."
+                "Call once when doctor is unclear. Never invent doctor names. "
+                "If empty/error, tell the caller and stop — do not retry in a loop."
             ),
             "parameters": {
                 "type": "object",
@@ -143,12 +144,22 @@ def gemini_function_declarations() -> list[dict[str, Any]]:
         },
         {
             "name": "transferCall",
-            "description": "Transfer to human receptionist when needed.",
+            "description": (
+                "Transfer to the hospital's human receptionist. "
+                "Omit destination unless you have an explicit E.164 phone number; "
+                "do not pass labels like 'receptionist'."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reason": {"type": "string"},
-                    "destination": {"type": "string"},
+                    "destination": {
+                        "type": "string",
+                        "description": (
+                            "Optional E.164 number (e.g. +919876543210). "
+                            "Usually omit — the hospital transfer number is used."
+                        ),
+                    },
                 },
             },
         },

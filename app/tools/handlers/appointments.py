@@ -64,17 +64,36 @@ class BookAppointmentHandler(ToolHandler):
                 error=(
                     "Missing required fields: "
                     + ", ".join(missing)
-                    + ". Ask the caller for these one at a time, then call doctorAvailability "
-                    "to confirm the doctor before booking."
+                    + ". Ask the caller for these one at a time. "
+                    "Do not call bookAppointment again until they answer."
                 ),
-                data={"missing": missing},
+                data={"missing": missing, "do_not_retry": True},
             )
 
         try:
-            staff = await self._hms.get(
-                tenant, endpoints.STAFF_BY_TYPE.format(staff_type="Doctor")
+            doctors = session.tool_context.get("doctors_all") or session.tool_context.get(
+                "doctors"
             )
-            doctors = normalize_doctor_list(staff)
+            if not doctors:
+                staff = await self._hms.get(
+                    tenant, endpoints.STAFF_BY_TYPE.format(staff_type="Doctor")
+                )
+                doctors = normalize_doctor_list(staff)
+                session.tool_context["doctors_all"] = doctors
+
+            if not doctors:
+                return ToolResult(
+                    id=call_id,
+                    name=self.name,
+                    success=False,
+                    error=(
+                        "No doctors available in HMS. Do NOT invent a doctor name. "
+                        "Tell the caller booking is unavailable and offer transfer. "
+                        "Do NOT call doctorAvailability or bookAppointment again."
+                    ),
+                    data={"do_not_retry": True},
+                )
+
             matched = resolve_doctor(
                 doctors, doctor_name=doctor_hint, doctor_id=doctor_id
             )
@@ -85,21 +104,32 @@ class BookAppointmentHandler(ToolHandler):
                     success=False,
                     error=(
                         "Multiple doctors matched. Ask the caller which one, "
-                        "then retry with the exact doctor name."
+                        "then wait for their answer before booking again."
                     ),
-                    data={"candidates": matched.get("candidates", [])},
+                    data={
+                        "candidates": matched.get("candidates", []),
+                        "do_not_retry": True,
+                    },
                 )
             if matched.get("status") == "not_found":
+                sample = [
+                    {"name": d["name"], "department": d.get("department") or ""}
+                    for d in doctors[:8]
+                ]
                 return ToolResult(
                     id=call_id,
                     name=self.name,
                     success=False,
                     error=(
                         f"Doctor '{doctor_hint or doctor_id}' not found. "
-                        "Call doctorAvailability, tell the caller available doctors, "
-                        "and ask them to choose."
+                        "Do NOT invent names. Tell the caller 2–3 available doctors "
+                        "from availableSample (if any), ask them to choose, and wait. "
+                        "Do not call tools again until they answer."
                     ),
-                    data={"doctors": doctors[:15]},
+                    data={
+                        "availableSample": sample,
+                        "do_not_retry": True,
+                    },
                 )
 
             doctor = matched["doctor"]
@@ -131,14 +161,25 @@ class BookAppointmentHandler(ToolHandler):
                 id=call_id,
                 name=self.name,
                 success=True,
-                data={"appointment": data, "doctor": doctor_name},
+                data={
+                    "appointment": data,
+                    "doctor": doctor_name,
+                    "note": (
+                        "Booking succeeded. Confirm doctor, date, and time to the "
+                        "caller now in one short sentence."
+                    ),
+                },
             )
         except httpx.HTTPError as exc:
             return ToolResult(
                 id=call_id,
                 name=self.name,
                 success=False,
-                error=hms_error_message(exc),
+                error=(
+                    f"{hms_error_message(exc)}. Tell the caller briefly and offer "
+                    "transfer if needed. Do not keep retrying booking silently."
+                ),
+                data={"do_not_retry": True},
             )
 
 

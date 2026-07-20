@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable
 
-from app.domain.models import CallSession, Tenant, ToolResult
+from app.domain.models import CallSession, Tenant, ToolResult, _normalize_phone
 from app.tools.base import ToolHandler
 
 TransferFn = Callable[[CallSession, Tenant, str | None, str | None], Awaitable[dict]]
+
+# Plivo Dial <Number> expects E.164-ish digits, not labels like "receptionist".
+_PHONE_RE = re.compile(r"^\+?\d{8,15}$")
+
+
+def _resolve_destination(raw: Any, tenant: Tenant) -> str | None:
+    if isinstance(raw, str):
+        candidate = _normalize_phone(raw.strip())
+        if _PHONE_RE.match(candidate):
+            return candidate
+    if tenant.transfer_number:
+        configured = _normalize_phone(tenant.transfer_number.strip())
+        if _PHONE_RE.match(configured):
+            return configured
+    return None
 
 
 class TransferCallHandler(ToolHandler):
@@ -24,7 +40,7 @@ class TransferCallHandler(ToolHandler):
         arguments: dict[str, Any],
         call_id: str,
     ) -> ToolResult:
-        destination = arguments.get("destination") or tenant.transfer_number
+        destination = _resolve_destination(arguments.get("destination"), tenant)
         if not destination:
             return ToolResult(
                 id=call_id,

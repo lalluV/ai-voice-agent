@@ -7,7 +7,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.domain.models import Tenant
+from app.domain.models import Tenant, _normalize_phone
 
 logger = get_logger(__name__)
 
@@ -72,10 +72,18 @@ class PlivoOutboundService:
         """
         if self._client is None:
             raise RuntimeError("PlivoOutboundService not started")
+        dest = _normalize_phone(destination)
+        cid = _normalize_phone(caller_id) if caller_id else None
+        if cid and not cid.startswith("+"):
+            cid = f"+{cid}"
+        if dest and not dest.startswith("+"):
+            dest = f"+{dest}"
         transfer_url = (
             self._settings.public_base_url.rstrip("/")
-            + f"/plivo/transfer-xml?to={quote(destination)}"
+            + f"/plivo/transfer-xml?to={quote(dest)}"
         )
+        if cid:
+            transfer_url += f"&callerId={quote(cid)}"
         # Plivo Transfer API is POST /Call/{call_uuid}/ (not .../Transfer/).
         # See https://www.plivo.com/docs/voice/api/calls/#transfer-a-call
         response = await self._client.post(
@@ -90,8 +98,9 @@ class PlivoOutboundService:
         logger.info(
             "call_transferred",
             call_uuid=call_uuid,
-            destination=destination,
-            caller_id=caller_id,
+            destination=dest,
+            caller_id=cid,
+            aleg_url=transfer_url,
         )
         return response.json()
 

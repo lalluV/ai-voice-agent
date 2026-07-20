@@ -108,7 +108,8 @@ class CallOrchestrator:
         result = await self._plivo.transfer_call(
             call_uuid=session.call_id,
             destination=dest,
-            caller_id=session.to_number,
+            caller_id=session.to_number
+            or (tenant.plivo_numbers[0] if tenant.plivo_numbers else None),
         )
         await self._sessions.end(session.session_id, reason=CallEndReason.TRANSFER)
         self._live.pop(session.session_id, None)

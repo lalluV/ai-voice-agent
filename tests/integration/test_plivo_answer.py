@@ -91,19 +91,16 @@ async def test_answer_reuses_prewarmed_outbound_session(
 
 
 @pytest.mark.asyncio
-async def test_answer_unknown_tenant() -> None:
+async def test_transfer_xml_includes_caller_id() -> None:
     app = FastAPI()
     app.include_router(plivo_webhooks.router)
-    resolver = AsyncMock()
-    resolver.resolve_inbound = AsyncMock(return_value=None)
-    app.state.tenant_resolver = resolver
-    app.state.session_manager = MagicMock()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/plivo/answer",
-            data={"To": "+910000000000", "From": "+911", "CallUUID": "x"},
+        resp = await client.get(
+            "/plivo/transfer-xml",
+            params={"to": "+919705490280", "callerId": "+918035017773"},
         )
     assert resp.status_code == 200
-    assert "not configured" in resp.text
+    assert 'callerId="+918035017773"' in resp.text
+    assert "<Number>+919705490280</Number>" in resp.text

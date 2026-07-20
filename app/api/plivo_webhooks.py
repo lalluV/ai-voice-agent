@@ -119,15 +119,23 @@ async def plivo_stream_status(
 
 
 @router.get("/plivo/transfer-xml")
-async def transfer_xml(to: str = Query(...)) -> Response:
+async def transfer_xml(
+    to: str = Query(...),
+    callerId: str | None = Query(None),
+) -> Response:
     """XML endpoint used by Plivo Transfer aleg_url."""
     safe = html.escape(to, quote=True)
+    # callerId must be a Plivo number you own; without it Dial often fails outbound.
+    dial_attrs = ""
+    if callerId:
+        dial_attrs = f' callerId="{html.escape(callerId, quote=True)}"'
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial>
+  <Dial{dial_attrs}>
     <Number>{safe}</Number>
   </Dial>
 </Response>"""
+    logger.info("transfer_xml_served", to=to, caller_id=callerId)
     return _xml_response(xml)
 
 
